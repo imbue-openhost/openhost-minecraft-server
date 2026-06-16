@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>OpenHost Minecraft Servers</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: system-ui, sans-serif;
+            max-width: 620px;
+            margin: 48px auto;
+            padding: 0 24px;
+            color: #1a1a1a;
+        }
+        h1 { font-size: 1.4rem; margin-bottom: 32px; }
+        h2 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: #888; margin-bottom: 10px; }
+        section { margin-bottom: 32px; }
+
+        /* Server list */
+        .server-list { display: flex; flex-direction: column; gap: 8px; }
+        .server-card {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 14px;
+            border-radius: 6px;
+            background: #f2f2f2;
+            font-size: 0.9rem;
+        }
+        .server-card.running { background: #edf7ee; }
+        .server-meta { display: flex; flex-direction: column; gap: 2px; }
+        .server-title { font-weight: 500; }
+        .server-detail { color: #666; font-size: 0.82rem; }
+        .badge {
+            display: inline-block;
+            font-size: 0.75rem;
+            padding: 2px 7px;
+            border-radius: 10px;
+            background: #ddd;
+            color: #555;
+        }
+        .badge.running { background: #c3eac7; color: #1c5e28; }
+        .empty { color: #999; font-size: 0.9rem; padding: 12px 0; }
+
+        /* Form */
+        .field { margin-bottom: 14px; }
+        label { display: block; font-size: 0.85rem; color: #555; margin-bottom: 4px; }
+        select, input[type=text], input[type=number] {
+            width: 100%;
+            padding: 7px 10px;
+            border: 1px solid #d4d4d4;
+            border-radius: 5px;
+            font-size: 0.95rem;
+            background: #fff;
+        }
+        .row { display: flex; gap: 8px; }
+        .row select { flex: 1; }
+        .new-world { display: none; margin-top: 8px; flex-direction: column; gap: 6px; }
+        .new-world.open { display: flex; }
+        .new-world-row { display: flex; gap: 8px; }
+        .new-world-row select { flex: 1; }
+
+        button {
+            padding: 7px 14px;
+            border-radius: 5px;
+            border: 1px solid #d4d4d4;
+            background: #fff;
+            cursor: pointer;
+            font-size: 0.9rem;
+            white-space: nowrap;
+        }
+        button:hover { background: #f0f0f0; }
+        .btn-primary { background: #2d7d3a; color: #fff; border-color: #2d7d3a; }
+        .btn-primary:hover { background: #256830; }
+        .btn-stop { background: #c0392b; color: #fff; border-color: #c0392b; }
+        .btn-stop:hover { background: #a93226; }
+    </style>
+</head>
+<body>
+    <h1>Minecraft Server</h1>
+
+    <section>
+        <h2>Servers</h2>
+        <div id="server-list" class="server-list">
+            <div class="empty">Loading...</div>
+        </div>
+    </section>
+
+    <section>
+        <h2>Start New Server</h2>
+
+        <div class="field">
+            <label>World</label>
+            <div class="row">
+                <select id="world"><option disabled selected>Loading...</option></select>
+                <button onclick="toggleNewWorld()">+ New</button>
+            </div>
+            <div class="new-world" id="new-world-form">
+                <input type="text" id="new-world-name" placeholder="world-name">
+                <div class="new-world-row">
+                    <select id="new-world-version"><option disabled selected>Loading...</option></select>
+                    <button onclick="createWorld()">Create</button>
+                    <button onclick="toggleNewWorld()">Cancel</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="field">
+            <label>Memory (MB)</label>
+            <input type="number" id="memory" value="2048" min="1024" max="16384" step="512">
+        </div>
+
+        <button class="btn-primary" onclick="startServer()">Start</button>
+    </section>
+
+    <script>
+        async function loadVersions() {
+            const versions = await fetch('/api/versions').then(r => r.json());
+            const sel = document.getElementById('new-world-version');
+            sel.innerHTML = versions.map(v => `<option value="${v}">${v}</option>`).join('');
+        }
+
+        async function loadWorlds() {
+            const worlds = await fetch('/api/worlds').then(r => r.json());
+            const sel = document.getElementById('world');
+            sel.innerHTML = worlds.length
+                ? worlds.map(w => `<option value="${w.name}">${w.name} (${w.version})</option>`).join('')
+                : '<option disabled selected>No worlds yet</option>';
+        }
+
+        function toggleNewWorld() {
+            const form = document.getElementById('new-world-form');
+            const open = form.classList.toggle('open');
+            if (open) document.getElementById('new-world-name').focus();
+            else document.getElementById('new-world-name').value = '';
+        }
+
+        async function createWorld() {
+            const name = document.getElementById('new-world-name').value.trim();
+            const version = document.getElementById('new-world-version').value;
+            if (!name || !version) return;
+            await fetch('/api/worlds', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({name, version}),
+            });
+            toggleNewWorld();
+            await loadWorlds();
+            document.getElementById('world').value = name;  // select the newly created world
+        }
+
+        async function startServer() {
+            await fetch('/api/server/start', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    world: document.getElementById('world').value,
+                    memory_mb: parseInt(document.getElementById('memory').value),
+                }),
+            });
+            await refreshServers();
+        }
+
+        async function stopServer(id) {
+            await fetch(`/api/server/stop?id_num=${id}`, {method: 'POST'});
+            await refreshServers();
+        }
+
+        async function refreshServers() {
+            const servers = await fetch('/api/servers').then(r => r.json());
+            const list = document.getElementById('server-list');
+            if (!servers.length) {
+                list.innerHTML = '<div class="empty">No servers running.</div>';
+                return;
+            }
+            list.innerHTML = servers.map(s => `
+                <div class="server-card ${s.running ? 'running' : ''}">
+                    <div class="server-meta">
+                        <div class="server-title">${s.version} &middot; ${s.world}</div>
+                        <div class="server-detail">${s.memory_mb} MB &nbsp;&middot;&nbsp; ID #${s.id}</div>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:10px">
+                        <span class="badge ${s.running ? 'running' : ''}">${s.running ? 'Running' : 'Stopped'}</span>
+                        ${s.running ? `<button class="btn-stop" onclick="stopServer(${s.id})">Stop</button>` : ''}
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        loadVersions();
+        loadWorlds();
+        refreshServers();
+        setInterval(refreshServers, 2000);
+    </script>
+</body>
+</html>

@@ -21,4 +21,4 @@ cpu_millicores = 200
 # Named sqlite databases provisioned + persisted by OpenHost.
 # sqlite = ["main"]
 # Persistent scratch directory for arbitrary app data (uploads, caches, etc).
-# app_data = true
+app_data = true

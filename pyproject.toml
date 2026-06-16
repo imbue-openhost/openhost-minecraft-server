@@ -8,6 +8,7 @@ dependencies = [
     "hypercorn>=0.17",
     "attrs>=24.0",
     "loguru>=0.7.3",
+    "httpx>=0.28.1",
 ]
 
 [dependency-groups]
