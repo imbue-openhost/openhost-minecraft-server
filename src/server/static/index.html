@@ -15,6 +15,20 @@
         h1 { font-size: 1.4rem; margin-bottom: 32px; }
         h2 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: #888; margin-bottom: 10px; }
         section { margin-bottom: 32px; }
+        details { margin-bottom: 32px; }
+        details summary {
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: #888;
+            margin-bottom: 10px;
+            cursor: pointer;
+            list-style: none;
+            user-select: none;
+        }
+        details summary::after { content: " ›"; }
+        details[open] summary::after { content: " ›"; transform: rotate(90deg); display: inline-block; }
+        details summary::-webkit-details-marker { display: none; }
 
         /* Server list */
         .server-list { display: flex; flex-direction: column; gap: 8px; }
@@ -70,13 +84,71 @@
             white-space: nowrap;
         }
         button:hover { background: #f0f0f0; }
+        button:disabled { opacity: 0.55; cursor: not-allowed; }
+        button:disabled:hover { background: #fff; }
         .btn-primary { background: #2d7d3a; color: #fff; border-color: #2d7d3a; }
         .btn-primary:hover { background: #256830; }
+        .btn-primary:disabled:hover { background: #2d7d3a; }
         .btn-stop { background: #c0392b; color: #fff; border-color: #c0392b; }
         .btn-stop:hover { background: #a93226; }
+
+        /* Checkbox */
+        .checkbox-label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.85rem;
+            color: #555;
+            cursor: pointer;
+            user-select: none;
+            margin-bottom: 0;
+        }
+        .checkbox-label input { width: auto; }
+
+        /* Download indicator */
+        .download-indicator {
+            display: none;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.88rem;
+            color: #555;
+            padding: 4px 0;
+        }
+        .download-indicator.visible { display: flex; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .spinner {
+            width: 14px;
+            height: 14px;
+            border: 2px solid #d4d4d4;
+            border-top-color: #2d7d3a;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            flex-shrink: 0;
+        }
+
+        /* Error banner */
+        .error-banner {
+            display: none;
+            background: #fce8e8;
+            border: 1px solid #f5a0a0;
+            color: #7f0000;
+            padding: 10px 14px;
+            border-radius: 6px;
+            margin-bottom: 16px;
+            font-size: 0.9rem;
+            align-items: flex-start;
+            gap: 10px;
+        }
+        .error-banner.visible { display: flex; }
+        .error-banner-msg { flex: 1; }
+        .error-banner-close { background: none; border: none; cursor: pointer; font-size: 1.1rem; color: #7f0000; padding: 0; line-height: 1; }
     </style>
 </head>
 <body>
+    <div id="error-banner" class="error-banner">
+        <span id="error-message" class="error-banner-msg"></span>
+        <button class="error-banner-close" onclick="clearError()">×</button>
+    </div>
     <h1>Minecraft Server</h1>
 
     <section>
@@ -99,8 +171,16 @@
                 <input type="text" id="new-world-name" placeholder="world-name">
                 <div class="new-world-row">
                     <select id="new-world-version"><option disabled selected>Loading...</option></select>
-                    <button onclick="createWorld()">Create</button>
-                    <button onclick="toggleNewWorld()">Cancel</button>
+                    <button id="create-btn" onclick="createWorld()">Create</button>
+                    <button id="cancel-btn" onclick="toggleNewWorld()">Cancel</button>
+                </div>
+                <label class="checkbox-label">
+                    <input type="checkbox" id="new-world-snapshots" onchange="loadNewWorldVersions()">
+                    Include snapshots
+                </label>
+                <div id="download-indicator" class="download-indicator" title="The first time a version is used, its server JAR (~50 MB) is downloaded from Mojang and cached. Future worlds using the same version start immediately.">
+                    <span class="spinner"></span>
+                    <span id="download-status-text"></span>
                 </div>
             </div>
         </div>
@@ -113,11 +193,74 @@
         <button class="btn-primary" onclick="startServer()">Start</button>
     </section>
 
+    <details>
+        <summary>Versions</summary>
+        <div class="field">
+            <label>Available</label>
+            <select id="available-versions"><option disabled selected>Loading...</option></select>
+            <label class="checkbox-label" style="margin-top:6px">
+                <input type="checkbox" id="available-snapshots" onchange="loadAvailableVersions()">
+                Include snapshots
+            </label>
+        </div>
+        <div class="field" style="margin-bottom:0">
+            <label>Downloaded</label>
+            <select id="downloaded-versions" title="Server JARs cached on disk. The first time a version is used it is downloaded from Mojang (~50 MB); after that it is instant."><option disabled selected>Loading...</option></select>
+        </div>
+    </details>
+
     <script>
-        async function loadVersions() {
-            const versions = await fetch('/api/versions').then(r => r.json());
-            const sel = document.getElementById('new-world-version');
-            sel.innerHTML = versions.map(v => `<option value="${v}">${v}</option>`).join('');
+        let downloadedVersions = new Set();
+
+        function showError(msg) {
+            document.getElementById('error-message').textContent = msg;
+            document.getElementById('error-banner').classList.add('visible');
+        }
+
+        function clearError() {
+            document.getElementById('error-banner').classList.remove('visible');
+        }
+
+        async function apiErrorDetail(r) {
+            try { return (await r.json()).detail ?? `Server error (${r.status})`; }
+            catch { return `Server error (${r.status})`; }
+        }
+
+        async function loadNewWorldVersions() {
+            const snapshots = document.getElementById('new-world-snapshots').checked;
+            const r = await fetch(`/api/versions?snapshots=${snapshots}`);
+            if (!r.ok) {
+                showError(await apiErrorDetail(r));
+                document.getElementById('new-world-version').innerHTML = '<option disabled selected>Unavailable</option>';
+                return;
+            }
+            const versions = await r.json();
+            document.getElementById('new-world-version').innerHTML =
+                versions.map(v => `<option value="${v}">${v}</option>`).join('');
+        }
+
+        async function loadAvailableVersions() {
+            const snapshots = document.getElementById('available-snapshots').checked;
+            const r = await fetch(`/api/versions?snapshots=${snapshots}`);
+            if (!r.ok) {
+                showError(await apiErrorDetail(r));
+                document.getElementById('available-versions').innerHTML = '<option disabled selected>Unavailable</option>';
+                return;
+            }
+            const versions = await r.json();
+            document.getElementById('available-versions').innerHTML =
+                versions.map(v => `<option value="${v}">${v}</option>`).join('');
+        }
+
+        async function loadDownloadedVersions() {
+            const r = await fetch('/api/versions/downloaded');
+            if (!r.ok) return;
+            const versions = await r.json();
+            downloadedVersions = new Set(versions);
+            const sel = document.getElementById('downloaded-versions');
+            sel.innerHTML = versions.length
+                ? versions.map(v => `<option value="${v}">${v}</option>`).join('')
+                : '<option disabled selected>None downloaded yet</option>';
         }
 
         async function loadWorlds() {
@@ -139,18 +282,40 @@
             const name = document.getElementById('new-world-name').value.trim();
             const version = document.getElementById('new-world-version').value;
             if (!name || !version) return;
-            await fetch('/api/worlds', {
+            clearError();
+
+            const needsDownload = !downloadedVersions.has(version);
+            const indicator = document.getElementById('download-indicator');
+            const statusText = document.getElementById('download-status-text');
+            const createBtn = document.getElementById('create-btn');
+            const cancelBtn = document.getElementById('cancel-btn');
+
+            indicator.classList.add('visible');
+            statusText.textContent = needsDownload
+                ? `Downloading ${version}... (this may take a minute)`
+                : 'Creating world...';
+            createBtn.disabled = true;
+            cancelBtn.disabled = true;
+
+            const r = await fetch('/api/worlds', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({name, version}),
             });
+
+            indicator.classList.remove('visible');
+            createBtn.disabled = false;
+            cancelBtn.disabled = false;
+
+            if (!r.ok) { showError(await apiErrorDetail(r)); return; }
             toggleNewWorld();
-            await loadWorlds();
+            await Promise.all([loadWorlds(), loadDownloadedVersions()]);
             document.getElementById('world').value = name;  // select the newly created world
         }
 
         async function startServer() {
-            await fetch('/api/server/start', {
+            clearError();
+            const r = await fetch('/api/server/start', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({
@@ -158,11 +323,14 @@
                     memory_mb: parseInt(document.getElementById('memory').value),
                 }),
             });
+            if (!r.ok) { showError(await apiErrorDetail(r)); return; }
             await refreshServers();
         }
 
         async function stopServer(id) {
-            await fetch(`/api/server/stop?id_num=${id}`, {method: 'POST'});
+            clearError();
+            const r = await fetch(`/api/server/stop?id_num=${id}`, {method: 'POST'});
+            if (!r.ok) { showError(await apiErrorDetail(r)); return; }
             await refreshServers();
         }
 
@@ -187,7 +355,9 @@
             `).join('');
         }
 
-        loadVersions();
+        loadNewWorldVersions();
+        loadAvailableVersions();
+        loadDownloadedVersions();
         loadWorlds();
         refreshServers();
         setInterval(refreshServers, 2000);

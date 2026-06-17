@@ -1,7 +1,10 @@
 import asyncio
 import concurrent.futures
+import hashlib
+from collections.abc import AsyncGenerator
 from typing import Any
 
+import httpx
 import pytest
 
 
@@ -10,14 +13,19 @@ def _run(coro: Any) -> Any:
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         return pool.submit(asyncio.run, coro).result()
 
+
 from server.server import MinecraftServer
 from server.server import ServerInfo
 from server.state import AppState
 from server.worlds import VERSION_MAP
 from server.worlds import WorldInfo
 from server.worlds import _VersionTableParser
+from server.worlds import download_version
+from server.worlds import ensure_version
+from server.worlds import fetch_available_versions
 from server.worlds import get_data_version
 from server.worlds import get_version_string
+from server.worlds import version_jar_path
 
 
 class TestVersionTableParser:
@@ -132,3 +140,167 @@ class TestAppStateWorldInsertion:
         state.worlds.append(new_world)
         state.worlds.sort(key=lambda w: w.world)
         assert [w.world for w in state.worlds] == ["apple", "banana", "cherry"]
+
+
+# ── httpx mock helpers ────────────────────────────────────────────────────────
+
+
+class _JsonResponse:
+    def __init__(self, data: Any) -> None:
+        self._data = data
+
+    def raise_for_status(self) -> "_JsonResponse":
+        return self
+
+    def json(self) -> Any:
+        return self._data
+
+
+class _StreamCtx:
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = chunks
+
+    async def __aenter__(self) -> "_StreamCtx":
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        pass
+
+    def raise_for_status(self) -> None:
+        pass
+
+    async def aiter_bytes(self, chunk_size: int) -> AsyncGenerator[bytes, None]:
+        for chunk in self._chunks:
+            yield chunk
+
+
+class _SequentialClient:
+    """Minimal async httpx.AsyncClient stand-in: iterates responses for .get(), streams chunks."""
+
+    def __init__(self, get_responses: list[Any], stream_chunks: list[bytes] | None = None) -> None:
+        self._iter = iter(get_responses)
+        self._stream_chunks = stream_chunks or []
+
+    async def __aenter__(self) -> "_SequentialClient":
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        pass
+
+    async def get(self, url: str, *, timeout: float) -> Any:
+        resp = next(self._iter)
+        if isinstance(resp, BaseException):
+            raise resp
+        return resp
+
+    def stream(self, method: str, url: str, *, timeout: float) -> _StreamCtx:
+        return _StreamCtx(self._stream_chunks)
+
+
+_MANIFEST = {"versions": [{"id": "1.21.5", "type": "release", "url": "http://meta.example/1.21.5.json"}]}
+_JAR_BYTES = b"fake-jar-content"
+_JAR_SHA1 = hashlib.sha1(_JAR_BYTES).hexdigest()
+_META = {"downloads": {"server": {"url": "http://files.example/server.jar", "sha1": _JAR_SHA1}}}
+
+
+# ── tests ─────────────────────────────────────────────────────────────────────
+
+
+class TestFetchAvailableVersions:
+    def test_returns_only_release_versions(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        manifest = {
+            "versions": [
+                {"id": "1.21.5", "type": "release"},
+                {"id": "1.21.5-rc1", "type": "snapshot"},
+                {"id": "1.21.4", "type": "release"},
+            ]
+        }
+        monkeypatch.setattr(httpx, "AsyncClient", lambda: _SequentialClient([_JsonResponse(manifest)]))
+        assert _run(fetch_available_versions()) == ["1.21.5", "1.21.4"]
+
+    def test_timeout_raises_runtime_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(httpx, "AsyncClient", lambda: _SequentialClient([httpx.TimeoutException("")]))
+        with pytest.raises(RuntimeError, match="Timed out"):
+            _run(fetch_available_versions())
+
+    def test_http_error_raises_runtime_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        exc = httpx.HTTPStatusError("", request=httpx.Request("GET", "http://x"), response=httpx.Response(503))
+        monkeypatch.setattr(httpx, "AsyncClient", lambda: _SequentialClient([exc]))
+        with pytest.raises(RuntimeError, match="HTTP 503"):
+            _run(fetch_available_versions())
+
+    def test_request_error_raises_runtime_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(httpx, "AsyncClient", lambda: _SequentialClient([httpx.ConnectError("")]))
+        with pytest.raises(RuntimeError, match="Network error"):
+            _run(fetch_available_versions())
+
+
+class TestDownloadVersion:
+    def test_success_writes_jar(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+        monkeypatch.setenv("OPENHOST_APP_DATA_DIR", str(tmp_path))
+        client = _SequentialClient([_JsonResponse(_MANIFEST), _JsonResponse(_META)], stream_chunks=[_JAR_BYTES])
+        monkeypatch.setattr(httpx, "AsyncClient", lambda: client)
+        _run(download_version("1.21.5"))
+        assert version_jar_path("1.21.5").read_bytes() == _JAR_BYTES
+
+    def test_unknown_version_raises_runtime_error(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+        monkeypatch.setenv("OPENHOST_APP_DATA_DIR", str(tmp_path))
+        manifest = {"versions": [{"id": "1.20.0", "type": "release", "url": "http://x"}]}
+        monkeypatch.setattr(httpx, "AsyncClient", lambda: _SequentialClient([_JsonResponse(manifest)]))
+        with pytest.raises(RuntimeError, match="Unknown Minecraft version: 1.21.5"):
+            _run(download_version("1.21.5"))
+
+    def test_sha1_mismatch_raises_and_cleans_up(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+        monkeypatch.setenv("OPENHOST_APP_DATA_DIR", str(tmp_path))
+        bad_meta = {"downloads": {"server": {"url": "http://files.example/server.jar", "sha1": "deadbeef" * 5}}}
+        client = _SequentialClient([_JsonResponse(_MANIFEST), _JsonResponse(bad_meta)], stream_chunks=[_JAR_BYTES])
+        monkeypatch.setattr(httpx, "AsyncClient", lambda: client)
+        with pytest.raises(RuntimeError, match="SHA1 mismatch"):
+            _run(download_version("1.21.5"))
+        assert not version_jar_path("1.21.5").exists()
+
+    def test_timeout_raises_runtime_error(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+        monkeypatch.setenv("OPENHOST_APP_DATA_DIR", str(tmp_path))
+        monkeypatch.setattr(httpx, "AsyncClient", lambda: _SequentialClient([httpx.TimeoutException("")]))
+        with pytest.raises(RuntimeError, match="Timed out"):
+            _run(download_version("1.21.5"))
+
+    def test_http_error_raises_runtime_error(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+        monkeypatch.setenv("OPENHOST_APP_DATA_DIR", str(tmp_path))
+        exc = httpx.HTTPStatusError("", request=httpx.Request("GET", "http://x"), response=httpx.Response(404))
+        monkeypatch.setattr(httpx, "AsyncClient", lambda: _SequentialClient([exc]))
+        with pytest.raises(RuntimeError, match="HTTP 404"):
+            _run(download_version("1.21.5"))
+
+    def test_request_error_raises_runtime_error(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+        monkeypatch.setenv("OPENHOST_APP_DATA_DIR", str(tmp_path))
+        monkeypatch.setattr(httpx, "AsyncClient", lambda: _SequentialClient([httpx.ConnectError("")]))
+        with pytest.raises(RuntimeError, match="Network error"):
+            _run(download_version("1.21.5"))
+
+
+class TestEnsureVersion:
+    def test_skips_download_if_jar_exists(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+        monkeypatch.setenv("OPENHOST_APP_DATA_DIR", str(tmp_path))
+        jar = version_jar_path("1.21.5")
+        jar.parent.mkdir(parents=True, exist_ok=True)
+        jar.write_bytes(b"existing")
+        called: list[str] = []
+
+        async def _fake_download(v: str) -> None:
+            called.append(v)
+
+        monkeypatch.setattr("server.worlds.download_version", _fake_download)
+        _run(ensure_version("1.21.5"))
+        assert called == []
+
+    def test_downloads_if_jar_missing(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+        monkeypatch.setenv("OPENHOST_APP_DATA_DIR", str(tmp_path))
+        called: list[str] = []
+
+        async def _fake_download(v: str) -> None:
+            called.append(v)
+
+        monkeypatch.setattr("server.worlds.download_version", _fake_download)
+        _run(ensure_version("1.21.5"))
+        assert called == ["1.21.5"]

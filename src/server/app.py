@@ -7,6 +7,7 @@ from litestar.datastructures import State
 from litestar.di import Provide
 
 from .routes import api_create_world
+from .routes import api_downloaded_versions
 from .routes import api_servers
 from .routes import api_start
 from .routes import api_status
@@ -49,7 +50,7 @@ def health() -> HealthStatus:
 
 
 app = Litestar(
-    route_handlers=[health, index, api_versions, api_worlds, api_create_world, api_servers, api_status, api_start, api_stop],
+    route_handlers=[health, index, api_versions, api_downloaded_versions, api_worlds, api_create_world, api_servers, api_status, api_start, api_stop],
     dependencies={"app_state": Provide(provide_app_state, sync_to_thread=False)},
     on_startup=[startup],
     on_shutdown=[shutdown],

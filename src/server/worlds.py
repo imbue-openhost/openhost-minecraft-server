@@ -1,3 +1,4 @@
+import hashlib
 import os
 from html.parser import HTMLParser
 from pathlib import Path
@@ -117,6 +118,10 @@ def create_world(name: str, version_str: str) -> None:
     (d / "version.txt").write_text(str(get_data_version(version_str)))
 
 
+def version_jar_path(version_str: str) -> Path:
+    return _data_dir() / "versions" / f"{version_str}.jar"
+
+
 def list_downloaded_versions() -> list[str]:
     d = _data_dir() / "versions"
     if not d.exists():
@@ -124,12 +129,60 @@ def list_downloaded_versions() -> list[str]:
     return sorted(p.stem for p in d.iterdir() if p.suffix == ".jar")
 
 
-async def fetch_available_versions() -> list[str]:
-    async with httpx.AsyncClient() as client:
-        r = await client.get(_MANIFEST_URL, timeout=10)
-        r.raise_for_status()
-        data = r.json()
-    return [v["id"] for v in data["versions"] if v["type"] == "release"]
+async def download_version(version_str: str) -> None:
+    try:
+        async with httpx.AsyncClient() as client:
+            manifest_r = await client.get(_MANIFEST_URL, timeout=10)
+            manifest_r.raise_for_status()
+            manifest = manifest_r.json()
+            entry = next((v for v in manifest["versions"] if v["id"] == version_str), None)
+            if entry is None:
+                raise RuntimeError(f"Unknown Minecraft version: {version_str}")
+            meta_r = await client.get(entry["url"], timeout=10)
+            meta_r.raise_for_status()
+            server_dl = meta_r.json()["downloads"]["server"]
+            jar_url: str = server_dl["url"]
+            expected_sha1: str = server_dl["sha1"]
+            dest = version_jar_path(version_str)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            h = hashlib.sha1()
+            with dest.open("wb") as f:
+                async with client.stream("GET", jar_url, timeout=300) as r:
+                    r.raise_for_status()
+                    async for chunk in r.aiter_bytes(65536):
+                        f.write(chunk)
+                        h.update(chunk)
+            if h.hexdigest() != expected_sha1:
+                dest.unlink()
+                raise RuntimeError(
+                    f"SHA1 mismatch for {version_str}: expected {expected_sha1}, got {h.hexdigest()}"
+                )
+    except httpx.TimeoutException:
+        raise RuntimeError(f"Timed out while downloading Minecraft {version_str}")
+    except httpx.HTTPStatusError as e:
+        raise RuntimeError(f"HTTP {e.response.status_code} while downloading Minecraft {version_str}")
+    except httpx.RequestError as e:
+        raise RuntimeError(f"Network error while downloading Minecraft {version_str}: {e}")
+
+
+async def ensure_version(version_str: str) -> None:
+    if not version_jar_path(version_str).exists():
+        await download_version(version_str)
+
+
+async def fetch_available_versions(include_snapshots: bool = False) -> list[str]:
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(_MANIFEST_URL, timeout=10)
+            r.raise_for_status()
+            data = r.json()
+    except httpx.TimeoutException:
+        raise RuntimeError("Timed out fetching Minecraft version list")
+    except httpx.HTTPStatusError as e:
+        raise RuntimeError(f"HTTP {e.response.status_code} fetching Minecraft version list")
+    except httpx.RequestError as e:
+        raise RuntimeError(f"Network error fetching Minecraft version list: {e}")
+    return [v["id"] for v in data["versions"] if include_snapshots or v["type"] == "release"]
 
 
 async def fetch_data_versions() -> dict[int, str]:

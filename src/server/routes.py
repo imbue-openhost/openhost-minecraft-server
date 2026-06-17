@@ -7,14 +7,17 @@ from litestar import post
 from litestar.exceptions import HTTPException
 from litestar.status_codes import HTTP_201_CREATED
 from litestar.status_codes import HTTP_409_CONFLICT
+from litestar.status_codes import HTTP_500_INTERNAL_SERVER_ERROR
 
 from .server import MinecraftServer
 from .server import ServerInfo
 from .state import AppState
 from .worlds import create_world
+from .worlds import ensure_version
 from .worlds import fetch_available_versions
 from .worlds import get_version_string
 from .worlds import get_world
+from .worlds import list_downloaded_versions
 from .worlds import read_world_version
 
 
@@ -51,8 +54,16 @@ def index() -> str:
 
 
 @get("/api/versions")
-async def api_versions() -> list[str]:
-    return await fetch_available_versions()
+async def api_versions(snapshots: bool = False) -> list[str]:
+    try:
+        return await fetch_available_versions(include_snapshots=snapshots)
+    except RuntimeError as e:
+        raise HTTPException(status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+
+@get("/api/versions/downloaded", sync_to_thread=False)
+def api_downloaded_versions() -> list[str]:
+    return list_downloaded_versions()
 
 
 @get("/api/worlds", sync_to_thread=False)
@@ -68,7 +79,11 @@ def api_worlds(app_state: AppState) -> list[WorldState]:
 
 
 @post("/api/worlds", status_code=HTTP_201_CREATED)
-def api_create_world(data: CreateWorldRequest, app_state: AppState) -> None:
+async def api_create_world(data: CreateWorldRequest, app_state: AppState) -> None:
+    try:
+        await ensure_version(data.version)
+    except RuntimeError as e:
+        raise HTTPException(status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
     create_world(data.name, data.version)
     world = get_world(data.name)
     if world is not None:
