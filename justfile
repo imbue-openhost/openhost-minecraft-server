@@ -20,6 +20,10 @@ check:
     uv run ruff format .
     uv run mypy
 
+# Regenerate src/server/version_data.py from the Minecraft wiki.
+gen-version-table:
+    uv run python scripts/build_version_table.py
+
 # Build the container image.
 build:
-    docker build -t app-template .
+    docker build -t openhost-minecraft-servers .

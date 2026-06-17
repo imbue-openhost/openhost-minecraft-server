@@ -12,6 +12,7 @@ venv/
 env/
 .env
 app_data/
+app_temp_data/
 
 # uv — uv.lock IS committed; the resolved python version pin is not
 .python-version
@@ -34,3 +35,4 @@ playwright-report/
 # Claude
 .claude/settings.json
 .claude/settings.local.json
+
