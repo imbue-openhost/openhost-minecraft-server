@@ -1,31 +1,41 @@
 import asyncio
 import concurrent.futures
 import hashlib
+import importlib.util
 from collections.abc import AsyncGenerator
+from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
 
-
-def _run(coro: Any) -> Any:
-    """Run a coroutine in a fresh thread that has no existing event loop."""
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(asyncio.run, coro).result()
-
-
+from server.java import required_java_version
 from server.server import MinecraftServer
 from server.server import ServerInfo
 from server.state import AppState
-from server.worlds import VERSION_MAP
+from server.version_data import VERSION_MAP
 from server.worlds import WorldInfo
-from server.worlds import _VersionTableParser
 from server.worlds import download_version
 from server.worlds import ensure_version
 from server.worlds import fetch_available_versions
 from server.worlds import get_data_version
 from server.worlds import get_version_string
 from server.worlds import version_jar_path
+
+# _VersionTableParser lives in the build script, not the runtime package.
+_bvt_spec = importlib.util.spec_from_file_location(
+    "build_version_table", Path(__file__).parent.parent / "scripts" / "build_version_table.py"
+)
+assert _bvt_spec is not None and _bvt_spec.loader is not None
+_bvt = importlib.util.module_from_spec(_bvt_spec)
+_bvt_spec.loader.exec_module(_bvt)  # type: ignore[attr-defined]
+_VersionTableParser = _bvt._VersionTableParser
+
+
+def _run(coro: Any) -> Any:
+    """Run a coroutine in a fresh thread that has no existing event loop."""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
 
 
 class TestVersionTableParser:
@@ -304,3 +314,36 @@ class TestEnsureVersion:
         monkeypatch.setattr("server.worlds.download_version", _fake_download)
         _run(ensure_version("1.21.5"))
         assert called == ["1.21.5"]
+
+
+class TestRequiredJavaVersion:
+    def test_java_25_at_threshold(self) -> None:
+        assert required_java_version(4764) == 25
+
+    def test_java_21_between_thresholds(self) -> None:
+        assert required_java_version(4671) == 21  # 1.21.11 — between 3827 and 4764
+
+    def test_java_21_at_threshold(self) -> None:
+        assert required_java_version(3827) == 21
+
+    def test_java_17_just_below_java_21_threshold(self) -> None:
+        assert required_java_version(3826) == 17
+
+    def test_java_17_at_threshold(self) -> None:
+        assert required_java_version(2848) == 17
+
+    def test_java_16_just_below_java_17_threshold(self) -> None:
+        assert required_java_version(2847) == 16
+
+    def test_java_16_at_threshold(self) -> None:
+        assert required_java_version(2714) == 16
+
+    def test_java_8_just_below_java_16_threshold(self) -> None:
+        assert required_java_version(2713) == 8
+
+    def test_java_8_at_threshold(self) -> None:
+        assert required_java_version(1122) == 8
+
+    def test_raises_for_version_below_1_12(self) -> None:
+        with pytest.raises(ValueError, match="predates supported range"):
+            required_java_version(1121)

@@ -1,69 +1,21 @@
 import hashlib
+import json
 import os
-from html.parser import HTMLParser
+import shutil
+import zipfile
 from pathlib import Path
 
 import attr
 import httpx
 
+from .version_data import VERSION_MAP
+
 _MANIFEST_URL = "https://launchermeta.mojang.com/mc/game/version_manifest_v2.json"
-_DATA_VERSION_API = (
-    "https://minecraft.wiki/api.php?action=parse&page=Data_version&prop=text&format=json&formatversion=2"
-)
-
-VERSION_MAP: dict[int, str] = {}
-
-
-class _VersionTableParser(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__()
-        self._in_table = False
-        self._in_row = False
-        self._in_td = False
-        self._td_index = 0
-        self._version_text = ""
-        self._dv_text = ""
-        self.result: dict[int, str] = {}
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        attr_dict = dict(attrs)
-        if tag == "table" and "wikitable" in (attr_dict.get("class") or ""):
-            self._in_table = True
-        elif self._in_table and tag == "tr":
-            self._in_row = True
-            self._td_index = 0
-            self._version_text = ""
-            self._dv_text = ""
-        elif self._in_table and self._in_row and tag == "td":
-            self._in_td = True
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag == "table":
-            self._in_table = False
-        elif self._in_table and tag == "td":
-            self._in_td = False
-            self._td_index += 1
-        elif self._in_table and self._in_row and tag == "tr":
-            self._in_row = False
-            version = self._version_text.strip().removeprefix("Java Edition ")
-            try:
-                dv = int(self._dv_text.strip())
-                if version:
-                    self.result[dv] = version
-            except ValueError:
-                pass
-
-    def handle_data(self, data: str) -> None:
-        if self._in_td:
-            if self._td_index == 0:
-                self._version_text += data
-            elif self._td_index == 1:
-                self._dv_text += data
 
 
 @attr.s(auto_attribs=True, frozen=True)
 class WorldInfo:
-    version: int
+    version: int  # official data version from version.json inside the server JAR
     world: str
 
 
@@ -82,21 +34,22 @@ def get_data_version(version_str: str) -> int:
     raise KeyError(f"Unknown version: {version_str}")
 
 
-def read_world_version(name: str) -> int:
-    # Placeholder: real implementation reads DataVersion from level.dat NBT.
-    return int((_data_dir() / "worlds" / name / "version.txt").read_text().strip())
-
-
-def is_world(name: str) -> bool:
-    return True
+def read_jar_data_version(jar_path: Path) -> int:
+    with zipfile.ZipFile(jar_path) as zf:
+        with zf.open("version.json") as f:
+            data = json.loads(f.read())
+    world_version = data["world_version"]
+    if not isinstance(world_version, int):
+        raise ValueError(f"version.json world_version: expected int, got {type(world_version).__name__}")
+    return world_version
 
 
 def get_world(name: str) -> WorldInfo | None:
-    try:
-        version = read_world_version(name)
-    except (ValueError, FileNotFoundError, OSError):
+    d = _data_dir() / "worlds" / name
+    jars = list(d.glob("*.jar"))
+    if not jars:
         return None
-    return WorldInfo(version=version, world=name)
+    return WorldInfo(version=read_jar_data_version(jars[0]), world=name)
 
 
 def load_worlds() -> list[WorldInfo]:
@@ -105,7 +58,7 @@ def load_worlds() -> list[WorldInfo]:
         return []
     result = []
     for p in sorted(d.iterdir()):
-        if p.is_dir() and is_world(p.name):
+        if p.is_dir():
             world = get_world(p.name)
             if world is not None:
                 result.append(world)
@@ -115,7 +68,7 @@ def load_worlds() -> list[WorldInfo]:
 def create_world(name: str, version_str: str) -> None:
     d = _data_dir() / "worlds" / name
     d.mkdir(parents=True, exist_ok=True)
-    (d / "version.txt").write_text(str(get_data_version(version_str)))
+    shutil.copy2(version_jar_path(version_str), d / f"{version_str}.jar")
 
 
 def version_jar_path(version_str: str) -> Path:
@@ -154,15 +107,13 @@ async def download_version(version_str: str) -> None:
                         h.update(chunk)
             if h.hexdigest() != expected_sha1:
                 dest.unlink()
-                raise RuntimeError(
-                    f"SHA1 mismatch for {version_str}: expected {expected_sha1}, got {h.hexdigest()}"
-                )
+                raise RuntimeError(f"SHA1 mismatch for {version_str}: expected {expected_sha1}, got {h.hexdigest()}")
     except httpx.TimeoutException:
-        raise RuntimeError(f"Timed out while downloading Minecraft {version_str}")
+        raise RuntimeError(f"Timed out while downloading Minecraft {version_str}") from None
     except httpx.HTTPStatusError as e:
-        raise RuntimeError(f"HTTP {e.response.status_code} while downloading Minecraft {version_str}")
+        raise RuntimeError(f"HTTP {e.response.status_code} while downloading Minecraft {version_str}") from e
     except httpx.RequestError as e:
-        raise RuntimeError(f"Network error while downloading Minecraft {version_str}: {e}")
+        raise RuntimeError(f"Network error while downloading Minecraft {version_str}: {e}") from e
 
 
 async def ensure_version(version_str: str) -> None:
@@ -177,19 +128,9 @@ async def fetch_available_versions(include_snapshots: bool = False) -> list[str]
             r.raise_for_status()
             data = r.json()
     except httpx.TimeoutException:
-        raise RuntimeError("Timed out fetching Minecraft version list")
+        raise RuntimeError("Timed out fetching Minecraft version list") from None
     except httpx.HTTPStatusError as e:
-        raise RuntimeError(f"HTTP {e.response.status_code} fetching Minecraft version list")
+        raise RuntimeError(f"HTTP {e.response.status_code} fetching Minecraft version list") from e
     except httpx.RequestError as e:
-        raise RuntimeError(f"Network error fetching Minecraft version list: {e}")
+        raise RuntimeError(f"Network error fetching Minecraft version list: {e}") from e
     return [v["id"] for v in data["versions"] if include_snapshots or v["type"] == "release"]
-
-
-async def fetch_data_versions() -> dict[int, str]:
-    async with httpx.AsyncClient() as client:
-        r = await client.get(_DATA_VERSION_API, timeout=15)
-        r.raise_for_status()
-        html: str = r.json()["parse"]["text"]
-    parser = _VersionTableParser()
-    parser.feed(html)
-    return parser.result

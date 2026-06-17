@@ -6,25 +6,39 @@ from litestar import get
 from litestar import post
 from litestar.exceptions import HTTPException
 from litestar.status_codes import HTTP_201_CREATED
+from litestar.status_codes import HTTP_400_BAD_REQUEST
+from litestar.status_codes import HTTP_404_NOT_FOUND
 from litestar.status_codes import HTTP_409_CONFLICT
 from litestar.status_codes import HTTP_500_INTERNAL_SERVER_ERROR
 
+from .java import ensure_java
+from .java import is_java_downloaded
+from .java import list_downloaded_java_versions
+from .java import required_java_version
 from .server import MinecraftServer
 from .server import ServerInfo
 from .state import AppState
 from .worlds import create_world
 from .worlds import ensure_version
 from .worlds import fetch_available_versions
+from .worlds import get_data_version
 from .worlds import get_version_string
 from .worlds import get_world
 from .worlds import list_downloaded_versions
-from .worlds import read_world_version
+from .worlds import read_jar_data_version
+from .worlds import version_jar_path
 
 
 @attr.s(auto_attribs=True, frozen=True)
 class WorldState:
     name: str
     version: str
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class JavaRequirement:
+    java_version: int
+    downloaded: bool
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -58,7 +72,7 @@ async def api_versions(snapshots: bool = False) -> list[str]:
     try:
         return await fetch_available_versions(include_snapshots=snapshots)
     except RuntimeError as e:
-        raise HTTPException(status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        raise HTTPException(status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)) from e
 
 
 @get("/api/versions/downloaded", sync_to_thread=False)
@@ -78,12 +92,34 @@ def api_worlds(app_state: AppState) -> list[WorldState]:
     return result
 
 
+@get("/api/java/downloaded", sync_to_thread=False)
+def api_java_downloaded() -> list[int]:
+    return list_downloaded_java_versions()
+
+
+@get("/api/java/required", sync_to_thread=False)
+def api_java_required(mc_version: str) -> JavaRequirement:
+    try:
+        dv = get_data_version(mc_version)
+    except KeyError:
+        raise HTTPException(
+            status_code=HTTP_404_NOT_FOUND, detail=f"Unknown Minecraft version: {mc_version!r}"
+        ) from None
+    try:
+        java_ver = required_java_version(dv)
+    except ValueError as e:
+        raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=str(e)) from e
+    return JavaRequirement(java_version=java_ver, downloaded=is_java_downloaded(java_ver))
+
+
 @post("/api/worlds", status_code=HTTP_201_CREATED)
 async def api_create_world(data: CreateWorldRequest, app_state: AppState) -> None:
     try:
         await ensure_version(data.version)
-    except RuntimeError as e:
-        raise HTTPException(status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        dv = read_jar_data_version(version_jar_path(data.version))
+        await ensure_java(required_java_version(dv))
+    except (RuntimeError, ValueError) as e:
+        raise HTTPException(status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)) from e
     create_world(data.name, data.version)
     world = get_world(data.name)
     if world is not None:
@@ -110,14 +146,22 @@ def api_status(app_state: AppState, id_num: int) -> bool:
     for s in app_state.servers:
         if s.get_id() == id_num:
             return s.is_running()
-    raise LookupError(f"Tried to get status, but no server found with id {id_num}")
+    raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail=f"No server with id {id_num}")
 
 
 @post("/api/server/start")
 async def api_start(data: StartRequest, app_state: AppState) -> bool:
     if any(s.is_running() and s.get_stats().world == data.world for s in app_state.servers):
         raise HTTPException(status_code=HTTP_409_CONFLICT, detail=f"World '{data.world}' is already running")
-    version_str = get_version_string(read_world_version(data.world))
+    world = get_world(data.world)
+    if world is None:
+        raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail=f"World '{data.world}' not found")
+    try:
+        version_str = get_version_string(world.version)
+    except KeyError:
+        raise HTTPException(
+            status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Unknown data version {world.version}"
+        ) from None
     server_info = ServerInfo(version=version_str, world=data.world, memory_mb=data.memory_mb)
     new_server = MinecraftServer(server_info, app_state.current_id)
     app_state.current_id += 1
@@ -132,4 +176,4 @@ async def api_stop(app_state: AppState, id_num: int) -> bool:
         if s.get_id() == id_num:
             await s.stop()
             return s.is_running()
-    raise LookupError(f"Tried to stop, but no server found with id {id_num}")
+    raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail=f"No server with id {id_num}")

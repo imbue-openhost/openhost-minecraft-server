@@ -59,6 +59,23 @@
         /* Form */
         .field { margin-bottom: 14px; }
         label { display: block; font-size: 0.85rem; color: #555; margin-bottom: 4px; }
+        select.empty { color: #aaa; }
+        .help {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 13px;
+            height: 13px;
+            border-radius: 50%;
+            background: #d4d4d4;
+            color: #666;
+            font-size: 0.65rem;
+            font-weight: 600;
+            cursor: default;
+            user-select: none;
+            margin-left: 3px;
+            vertical-align: middle;
+        }
         select, input[type=text], input[type=number] {
             width: 100%;
             padding: 7px 10px;
@@ -149,7 +166,7 @@
         <span id="error-message" class="error-banner-msg"></span>
         <button class="error-banner-close" onclick="clearError()">×</button>
     </div>
-    <h1>Minecraft Server</h1>
+    <h1>OpenHost Minecraft Servers</h1>
 
     <section>
         <h2>Servers</h2>
@@ -159,7 +176,7 @@
     </section>
 
     <section>
-        <h2>Start New Server</h2>
+        <h2>Start Server</h2>
 
         <div class="field">
             <label>World</label>
@@ -190,7 +207,7 @@
             <input type="number" id="memory" value="2048" min="1024" max="16384" step="512">
         </div>
 
-        <button class="btn-primary" onclick="startServer()">Start</button>
+        <button id="start-btn" class="btn-primary" onclick="startServer()">Start</button>
     </section>
 
     <details>
@@ -203,9 +220,13 @@
                 Include snapshots
             </label>
         </div>
+        <div class="field">
+            <label>Downloaded server JARs <span class="help" title="The first time a version is used, the JAR is downloaded and cached (~50MB each). Each world then copies in the corresponding version. ">?</span></label>
+            <select id="downloaded-versions"><option disabled selected>Loading...</option></select>
+        </div>
         <div class="field" style="margin-bottom:0">
-            <label>Downloaded</label>
-            <select id="downloaded-versions" title="Server JARs cached on disk. The first time a version is used it is downloaded from Mojang (~50 MB); after that it is instant."><option disabled selected>Loading...</option></select>
+            <label>Downloaded Java runtimes <span class="help" title="Different versions require different versions of Java, which are downloaded as needed (~90MB each)">?</span></label>
+            <select id="downloaded-java"><option disabled selected>Loading...</option></select>
         </div>
     </details>
 
@@ -263,12 +284,29 @@
                 : '<option disabled selected>None downloaded yet</option>';
         }
 
+        async function loadDownloadedJavaVersions() {
+            const r = await fetch('/api/java/downloaded');
+            if (!r.ok) return;
+            const versions = await r.json();
+            const sel = document.getElementById('downloaded-java');
+            sel.innerHTML = versions.length
+                ? versions.map(v => `<option value="${v}">Java ${v}</option>`).join('')
+                : '<option disabled selected>None downloaded yet</option>';
+        }
+
         async function loadWorlds() {
             const worlds = await fetch('/api/worlds').then(r => r.json());
             const sel = document.getElementById('world');
-            sel.innerHTML = worlds.length
-                ? worlds.map(w => `<option value="${w.name}">${w.name} (${w.version})</option>`).join('')
-                : '<option disabled selected>No worlds yet</option>';
+            const startBtn = document.getElementById('start-btn');
+            if (worlds.length) {
+                sel.innerHTML = worlds.map(w => `<option value="${w.name}">${w.name} (${w.version})</option>`).join('');
+                sel.classList.remove('empty');
+                startBtn.disabled = false;
+            } else {
+                sel.innerHTML = '<option disabled selected>No worlds yet</option>';
+                sel.classList.add('empty');
+                startBtn.disabled = true;
+            }
         }
 
         function toggleNewWorld() {
@@ -284,16 +322,24 @@
             if (!name || !version) return;
             clearError();
 
-            const needsDownload = !downloadedVersions.has(version);
+            // Pre-flight: check what needs downloading so the status message is accurate.
+            const downloadParts = [];
+            if (!downloadedVersions.has(version)) downloadParts.push(version);
+            const javaR = await fetch(`/api/java/required?mc_version=${encodeURIComponent(version)}`);
+            if (javaR.ok) {
+                const j = await javaR.json();
+                if (!j.downloaded) downloadParts.push(`Java ${j.java_version}`);
+            }
+
             const indicator = document.getElementById('download-indicator');
             const statusText = document.getElementById('download-status-text');
             const createBtn = document.getElementById('create-btn');
             const cancelBtn = document.getElementById('cancel-btn');
 
             indicator.classList.add('visible');
-            statusText.textContent = needsDownload
-                ? `Downloading ${version}... (this may take a minute)`
-                : 'Creating world...';
+            statusText.textContent = downloadParts.length
+                ? `Downloading ${downloadParts.join(' and ')}… (this may take a minute)`
+                : 'Creating world…';
             createBtn.disabled = true;
             cancelBtn.disabled = true;
 
@@ -309,7 +355,7 @@
 
             if (!r.ok) { showError(await apiErrorDetail(r)); return; }
             toggleNewWorld();
-            await Promise.all([loadWorlds(), loadDownloadedVersions()]);
+            await Promise.all([loadWorlds(), loadDownloadedVersions(), loadDownloadedJavaVersions()]);
             document.getElementById('world').value = name;  // select the newly created world
         }
 
@@ -358,6 +404,7 @@
         loadNewWorldVersions();
         loadAvailableVersions();
         loadDownloadedVersions();
+        loadDownloadedJavaVersions();
         loadWorlds();
         refreshServers();
         setInterval(refreshServers, 2000);
