@@ -60,6 +60,17 @@
         .field { margin-bottom: 14px; }
         label { display: block; font-size: 0.85rem; color: #555; margin-bottom: 4px; }
         select.empty { color: #aaa; }
+        .tag-list { display: flex; flex-wrap: wrap; gap: 4px; min-height: 22px; }
+        .tag-list-scroll { max-height: 88px; overflow-y: auto; }
+        .tag {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 10px;
+            background: #f0f0f0;
+            color: #444;
+            font-size: 0.8rem;
+        }
+        .tag-empty { color: #999; font-size: 0.85rem; line-height: 22px; }
         .help {
             display: inline-flex;
             align-items: center;
@@ -121,6 +132,7 @@
             margin-bottom: 0;
         }
         .checkbox-label input { width: auto; }
+        .checkbox-label a { color: #2d7d3a; }
 
         /* Download indicator */
         .download-indicator {
@@ -159,6 +171,63 @@
         .error-banner.visible { display: flex; }
         .error-banner-msg { flex: 1; }
         .error-banner-close { background: none; border: none; cursor: pointer; font-size: 1.1rem; color: #7f0000; padding: 0; line-height: 1; }
+
+        /* Past sessions */
+        .sessions-world { margin-bottom: 16px; }
+        .sessions-world-name { font-weight: 500; font-size: 0.9rem; margin-bottom: 6px; }
+        .session-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 6px 0;
+            border-bottom: 1px solid #f2f2f2;
+        }
+        .session-label { font-size: 0.85rem; color: #555; }
+
+        /* Detail / session view */
+        .detail-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+        .detail-title { flex: 1; font-weight: 600; }
+        .stat-bar {
+            display: flex;
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            overflow: hidden;
+            margin-bottom: 12px;
+        }
+        .stat-cell {
+            flex: 1;
+            padding: 10px 14px;
+            background: #f8f8f8;
+            border-right: 1px solid #e0e0e0;
+        }
+        .stat-cell:last-child { border-right: none; }
+        .stat-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: #888; }
+        .stat-value { font-size: 0.95rem; font-weight: 500; margin-top: 2px; }
+        .terminal {
+            background: #1a1a1a;
+            color: #d4d4d4;
+            font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, monospace;
+            font-size: 0.78rem;
+            line-height: 1.55;
+            padding: 12px 14px;
+            border-radius: 6px;
+            height: 340px;
+            overflow-y: auto;
+            margin-bottom: 8px;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        .terminal-input { display: flex; gap: 8px; }
+        .terminal-input input {
+            flex: 1;
+            font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, monospace;
+            font-size: 0.88rem;
+        }
     </style>
 </head>
 <body>
@@ -166,72 +235,152 @@
         <span id="error-message" class="error-banner-msg"></span>
         <button class="error-banner-close" onclick="clearError()">×</button>
     </div>
-    <h1>OpenHost Minecraft Servers</h1>
 
-    <section>
-        <h2>Servers</h2>
-        <div id="server-list" class="server-list">
-            <div class="empty">Loading...</div>
-        </div>
-    </section>
+    <!-- ── Main view ─────────────────────────────────────────────────────── -->
+    <div id="main-view">
+        <h1>OpenHost Minecraft Servers</h1>
 
-    <section>
-        <h2>Start Server</h2>
-
-        <div class="field">
-            <label>World</label>
-            <div class="row">
-                <select id="world"><option disabled selected>Loading...</option></select>
-                <button onclick="toggleNewWorld()">+ New</button>
+        <section>
+            <h2>Servers</h2>
+            <div id="server-list" class="server-list">
+                <div class="empty">Loading...</div>
             </div>
-            <div class="new-world" id="new-world-form">
-                <input type="text" id="new-world-name" placeholder="world-name">
-                <div class="new-world-row">
-                    <select id="new-world-version"><option disabled selected>Loading...</option></select>
-                    <button id="create-btn" onclick="createWorld()">Create</button>
-                    <button id="cancel-btn" onclick="toggleNewWorld()">Cancel</button>
+        </section>
+
+        <section>
+            <h2>Start Server</h2>
+
+            <div class="field">
+                <label>World</label>
+                <div class="row">
+                    <select id="world"><option disabled selected>Loading...</option></select>
+                    <button onclick="toggleNewWorld()">+ New</button>
                 </div>
-                <label class="checkbox-label">
-                    <input type="checkbox" id="new-world-snapshots" onchange="loadNewWorldVersions()">
+                <div class="new-world" id="new-world-form">
+                    <input type="text" id="new-world-name" placeholder="world-name">
+                    <div class="new-world-row">
+                        <select id="new-world-version"><option disabled selected>Loading...</option></select>
+                        <button id="create-btn" onclick="createWorld()" disabled>Create</button>
+                        <button id="cancel-btn" onclick="toggleNewWorld()">Cancel</button>
+                    </div>
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="new-world-snapshots" onchange="loadNewWorldVersions()">
+                        Include snapshots
+                    </label>
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="eula-accept" onchange="updateCreateBtn()">
+                        I agree to the <a href="https://aka.ms/MinecraftEULA" target="_blank" rel="noopener">Minecraft EULA</a>
+                    </label>
+                    <div id="download-indicator" class="download-indicator">
+                        <span class="spinner"></span>
+                        <span id="download-status-text"></span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="field">
+                <label>Memory (MB)</label>
+                <input type="number" id="memory" value="2048" min="1024" max="16384" step="1024">
+            </div>
+
+            <button id="start-btn" class="btn-primary" onclick="startServer()">Start</button>
+        </section>
+
+        <details id="past-sessions-details" ontoggle="if(this.open) loadSessions()">
+            <summary>Past Sessions</summary>
+            <div id="sessions-list"><div class="empty">Loading…</div></div>
+        </details>
+
+        <details>
+            <summary>Versions</summary>
+            <div class="field">
+                <label>Available</label>
+                <label class="checkbox-label" style="margin-bottom:6px">
+                    <input type="checkbox" id="available-snapshots" onchange="loadAvailableVersions()">
                     Include snapshots
                 </label>
-                <div id="download-indicator" class="download-indicator" title="The first time a version is used, its server JAR (~50 MB) is downloaded from Mojang and cached. Future worlds using the same version start immediately.">
-                    <span class="spinner"></span>
-                    <span id="download-status-text"></span>
-                </div>
+                <div id="available-tags" class="tag-list tag-list-scroll"><span class="tag-empty">Loading…</span></div>
+            </div>
+            <div class="field">
+                <label>Downloaded server JARs <span class="help" title="The first time a version is used, the JAR is downloaded and cached (~50 MB each). Each world then copies in the corresponding version.">?</span></label>
+                <div id="downloaded-tags" class="tag-list"><span class="tag-empty">Loading…</span></div>
+            </div>
+            <div class="field" style="margin-bottom:0">
+                <label>Downloaded Java runtimes <span class="help" title="Different versions require different versions of Java, which are downloaded as needed (~90 MB each).">?</span></label>
+                <div id="downloaded-java-tags" class="tag-list"><span class="tag-empty">Loading…</span></div>
+            </div>
+        </details>
+    </div>
+
+    <!-- ── Live server detail view ───────────────────────────────────────── -->
+    <div id="detail-view" style="display:none">
+        <div class="detail-header">
+            <button onclick="closeDetail()">← Back</button>
+            <span class="detail-title">
+                <span id="detail-version"></span> &middot; <span id="detail-world"></span>
+            </span>
+            <span id="detail-badge" class="badge"></span>
+            <button id="detail-stop-btn" class="btn-stop" onclick="stopDetailServer()" style="display:none">Stop</button>
+        </div>
+
+        <div class="stat-bar">
+            <div class="stat-cell">
+                <div class="stat-label">CPU</div>
+                <div class="stat-value" id="stat-cpu">—</div>
+            </div>
+            <div class="stat-cell">
+                <div class="stat-label">RAM</div>
+                <div class="stat-value" id="stat-ram">—</div>
+            </div>
+            <div class="stat-cell">
+                <div class="stat-label">Uptime</div>
+                <div class="stat-value" id="stat-uptime">—</div>
+            </div>
+            <div class="stat-cell">
+                <div class="stat-label">PID</div>
+                <div class="stat-value" id="stat-pid">—</div>
             </div>
         </div>
 
-        <div class="field">
-            <label>Memory (MB)</label>
-            <input type="number" id="memory" value="2048" min="1024" max="16384" step="512">
+        <div id="terminal" class="terminal"></div>
+
+        <div class="terminal-input">
+            <input type="text" id="cmd-input" placeholder="Enter command…"
+                   onkeydown="if(event.key==='Enter') sendCommand()">
+            <button id="cmd-send-btn" onclick="sendCommand()">Send</button>
+        </div>
+    </div>
+
+    <!-- ── Past session log viewer ───────────────────────────────────────── -->
+    <div id="session-view" style="display:none">
+        <div class="detail-header">
+            <button onclick="closeSession()">← Back</button>
+            <span class="detail-title">
+                <span id="session-world-name"></span> &middot; Session #<span id="session-num"></span>
+            </span>
+            <span class="badge">Past Session</span>
         </div>
 
-        <button id="start-btn" class="btn-primary" onclick="startServer()">Start</button>
-    </section>
+        <div class="stat-bar">
+            <div class="stat-cell">
+                <div class="stat-label">World</div>
+                <div class="stat-value" id="session-world-display"></div>
+            </div>
+            <div class="stat-cell" style="flex:2">
+                <div class="stat-label">Started</div>
+                <div class="stat-value" id="session-date"></div>
+            </div>
+        </div>
 
-    <details>
-        <summary>Versions</summary>
-        <div class="field">
-            <label>Available</label>
-            <select id="available-versions"><option disabled selected>Loading...</option></select>
-            <label class="checkbox-label" style="margin-top:6px">
-                <input type="checkbox" id="available-snapshots" onchange="loadAvailableVersions()">
-                Include snapshots
-            </label>
-        </div>
-        <div class="field">
-            <label>Downloaded server JARs <span class="help" title="The first time a version is used, the JAR is downloaded and cached (~50MB each). Each world then copies in the corresponding version. ">?</span></label>
-            <select id="downloaded-versions"><option disabled selected>Loading...</option></select>
-        </div>
-        <div class="field" style="margin-bottom:0">
-            <label>Downloaded Java runtimes <span class="help" title="Different versions require different versions of Java, which are downloaded as needed (~90MB each)">?</span></label>
-            <select id="downloaded-java"><option disabled selected>Loading...</option></select>
-        </div>
-    </details>
+        <div id="session-terminal" class="terminal">Loading…</div>
+    </div>
 
     <script>
         let downloadedVersions = new Set();
+        let detailSessionId = null;
+        let detailPollTimer = null;
+
+        // ── Utilities ──────────────────────────────────────────────────────
 
         function showError(msg) {
             document.getElementById('error-message').textContent = msg;
@@ -246,6 +395,34 @@
             try { return (await r.json()).detail ?? `Server error (${r.status})`; }
             catch { return `Server error (${r.status})`; }
         }
+
+        function escapeHtml(s) {
+            return String(s)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        // Wrap a JS value for safe embedding inside a double-quoted HTML attribute.
+        function jsAttr(v) { return escapeHtml(JSON.stringify(v)); }
+
+        function fmtUptime(s) {
+            const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.floor(s % 60);
+            if (h > 0) return `${h}h ${m}m`;
+            if (m > 0) return `${m}m ${sec}s`;
+            return `${sec}s`;
+        }
+
+        function formatSessionDate(s) {
+            const m = s.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})$/);
+            if (!m) return s;
+            const d = new Date(+m[1], +m[2]-1, +m[3], +m[4], +m[5], +m[6]);
+            return d.toLocaleString(undefined, {month:'short', day:'numeric', year:'numeric', hour:'2-digit', minute:'2-digit'});
+        }
+
+        // ── Version / world loaders ────────────────────────────────────────
 
         async function loadNewWorldVersions() {
             const snapshots = document.getElementById('new-world-snapshots').checked;
@@ -263,14 +440,16 @@
         async function loadAvailableVersions() {
             const snapshots = document.getElementById('available-snapshots').checked;
             const r = await fetch(`/api/versions?snapshots=${snapshots}`);
+            const container = document.getElementById('available-tags');
             if (!r.ok) {
                 showError(await apiErrorDetail(r));
-                document.getElementById('available-versions').innerHTML = '<option disabled selected>Unavailable</option>';
+                container.innerHTML = '<span class="tag-empty">Unavailable</span>';
                 return;
             }
             const versions = await r.json();
-            document.getElementById('available-versions').innerHTML =
-                versions.map(v => `<option value="${v}">${v}</option>`).join('');
+            container.innerHTML = versions.length
+                ? versions.map(v => `<span class="tag">${v}</span>`).join('')
+                : '<span class="tag-empty">None available</span>';
         }
 
         async function loadDownloadedVersions() {
@@ -278,20 +457,20 @@
             if (!r.ok) return;
             const versions = await r.json();
             downloadedVersions = new Set(versions);
-            const sel = document.getElementById('downloaded-versions');
-            sel.innerHTML = versions.length
-                ? versions.map(v => `<option value="${v}">${v}</option>`).join('')
-                : '<option disabled selected>None downloaded yet</option>';
+            const container = document.getElementById('downloaded-tags');
+            container.innerHTML = versions.length
+                ? versions.map(v => `<span class="tag">${v}</span>`).join('')
+                : '<span class="tag-empty">None downloaded yet</span>';
         }
 
         async function loadDownloadedJavaVersions() {
             const r = await fetch('/api/java/downloaded');
             if (!r.ok) return;
             const versions = await r.json();
-            const sel = document.getElementById('downloaded-java');
-            sel.innerHTML = versions.length
-                ? versions.map(v => `<option value="${v}">Java ${v}</option>`).join('')
-                : '<option disabled selected>None downloaded yet</option>';
+            const container = document.getElementById('downloaded-java-tags');
+            container.innerHTML = versions.length
+                ? versions.map(v => `<span class="tag">Java ${v}</span>`).join('')
+                : '<span class="tag-empty">None downloaded yet</span>';
         }
 
         async function loadWorlds() {
@@ -309,20 +488,82 @@
             }
         }
 
+        // ── Past sessions ──────────────────────────────────────────────────
+
+        async function loadSessions() {
+            const r = await fetch('/api/sessions');
+            if (!r.ok) return;
+            const worlds = await r.json();
+            const container = document.getElementById('sessions-list');
+            if (!worlds.length) {
+                container.innerHTML = '<div class="empty">No past sessions.</div>';
+                return;
+            }
+            container.innerHTML = worlds.map(ws => `
+                <div class="sessions-world">
+                    <div class="sessions-world-name">${escapeHtml(ws.world)}</div>
+                    ${ws.sessions.map(s => `
+                        <div class="session-row">
+                            <span class="session-label">
+                                #${s.session_id} &nbsp;·&nbsp; ${escapeHtml(formatSessionDate(s.started_at))}
+                            </span>
+                            <button onclick="openSessionLog(${jsAttr(ws.world)}, ${s.session_id}, ${jsAttr(s.started_at)})">View</button>
+                        </div>
+                    `).join('')}
+                </div>
+            `).join('');
+        }
+
+        async function openSessionLog(world, sessionId, startedAt) {
+            document.getElementById('session-world-name').textContent = world;
+            document.getElementById('session-world-display').textContent = world;
+            document.getElementById('session-num').textContent = sessionId;
+            document.getElementById('session-date').textContent = formatSessionDate(startedAt);
+            document.getElementById('session-terminal').textContent = 'Loading…';
+            document.getElementById('main-view').style.display = 'none';
+            document.getElementById('session-view').style.display = '';
+
+            const r = await fetch(`/api/sessions/log?world=${encodeURIComponent(world)}&session_id=${sessionId}`);
+            const t = document.getElementById('session-terminal');
+            if (!r.ok) {
+                t.textContent = await apiErrorDetail(r);
+                return;
+            }
+            const lines = await r.json();
+            t.textContent = lines.join('\n');
+            t.scrollTop = t.scrollHeight;
+        }
+
+        function closeSession() {
+            document.getElementById('session-view').style.display = 'none';
+            document.getElementById('main-view').style.display = '';
+        }
+
+        // ── New world form ─────────────────────────────────────────────────
+
+        function updateCreateBtn() {
+            document.getElementById('create-btn').disabled =
+                !document.getElementById('eula-accept').checked;
+        }
+
         function toggleNewWorld() {
             const form = document.getElementById('new-world-form');
             const open = form.classList.toggle('open');
-            if (open) document.getElementById('new-world-name').focus();
-            else document.getElementById('new-world-name').value = '';
+            if (open) {
+                document.getElementById('new-world-name').focus();
+            } else {
+                document.getElementById('new-world-name').value = '';
+                document.getElementById('eula-accept').checked = false;
+                updateCreateBtn();
+            }
         }
 
         async function createWorld() {
             const name = document.getElementById('new-world-name').value.trim();
             const version = document.getElementById('new-world-version').value;
-            if (!name || !version) return;
+            if (!name || !version || !document.getElementById('eula-accept').checked) return;
             clearError();
 
-            // Pre-flight: check what needs downloading so the status message is accurate.
             const downloadParts = [];
             if (!downloadedVersions.has(version)) downloadParts.push(version);
             const javaR = await fetch(`/api/java/required?mc_version=${encodeURIComponent(version)}`);
@@ -356,7 +597,39 @@
             if (!r.ok) { showError(await apiErrorDetail(r)); return; }
             toggleNewWorld();
             await Promise.all([loadWorlds(), loadDownloadedVersions(), loadDownloadedJavaVersions()]);
-            document.getElementById('world').value = name;  // select the newly created world
+            document.getElementById('world').value = name;
+        }
+
+        // ── Server list ────────────────────────────────────────────────────
+
+        function renderServerCard(s) {
+            if (s.status === 'running') {
+                return `
+                <div class="server-card running">
+                    <div class="server-meta">
+                        <div class="server-title">${escapeHtml(s.version)} &middot; ${escapeHtml(s.world)}</div>
+                        <div class="server-detail">${s.memory_mb} MB &nbsp;&middot;&nbsp; Session #${s.session_id}</div>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:8px">
+                        <span class="badge running">Running</span>
+                        <button onclick="openDetail(${s.session_id}, ${jsAttr(s.version)}, ${jsAttr(s.world)})">View</button>
+                        <button class="btn-stop" onclick="stopServer(${s.session_id})">Stop</button>
+                    </div>
+                </div>`;
+            }
+            const labels = {stopping: 'Stopping…', saving: 'Saving session…', saved: 'Session saved'};
+            const label = labels[s.status] || s.status;
+            return `
+            <div class="server-card">
+                <div class="server-meta">
+                    <div class="server-title">${escapeHtml(s.version)} &middot; ${escapeHtml(s.world)}</div>
+                    <div class="server-detail">${s.memory_mb} MB &nbsp;&middot;&nbsp; Session #${s.session_id}</div>
+                </div>
+                <div style="display:flex;align-items:center;gap:8px">
+                    <span class="badge">${label}</span>
+                    ${s.status !== 'saved' ? '<span class="spinner"></span>' : ''}
+                </div>
+            </div>`;
         }
 
         async function startServer() {
@@ -373,11 +646,11 @@
             await refreshServers();
         }
 
-        async function stopServer(id) {
+        async function stopServer(sessionId) {
             clearError();
-            const r = await fetch(`/api/server/stop?id_num=${id}`, {method: 'POST'});
-            if (!r.ok) { showError(await apiErrorDetail(r)); return; }
-            await refreshServers();
+            const r = await fetch(`/api/server/stop?session_id=${sessionId}`, {method: 'POST'});
+            if (!r.ok) showError(await apiErrorDetail(r));
+            // Status transitions are driven by polling — no forced refresh needed.
         }
 
         async function refreshServers() {
@@ -387,19 +660,95 @@
                 list.innerHTML = '<div class="empty">No servers running.</div>';
                 return;
             }
-            list.innerHTML = servers.map(s => `
-                <div class="server-card ${s.running ? 'running' : ''}">
-                    <div class="server-meta">
-                        <div class="server-title">${s.version} &middot; ${s.world}</div>
-                        <div class="server-detail">${s.memory_mb} MB &nbsp;&middot;&nbsp; ID #${s.id}</div>
-                    </div>
-                    <div style="display:flex;align-items:center;gap:10px">
-                        <span class="badge ${s.running ? 'running' : ''}">${s.running ? 'Running' : 'Stopped'}</span>
-                        ${s.running ? `<button class="btn-stop" onclick="stopServer(${s.id})">Stop</button>` : ''}
-                    </div>
-                </div>
-            `).join('');
+            list.innerHTML = servers.map(renderServerCard).join('');
         }
+
+        // ── Live detail view ───────────────────────────────────────────────
+
+        function openDetail(sessionId, version, world) {
+            detailSessionId = sessionId;
+            document.getElementById('detail-version').textContent = version;
+            document.getElementById('detail-world').textContent = world;
+            document.getElementById('terminal').textContent = '';
+            document.getElementById('detail-stop-btn').style.display = '';
+            document.getElementById('cmd-input').disabled = false;
+            document.getElementById('cmd-send-btn').disabled = false;
+
+            document.getElementById('main-view').style.display = 'none';
+            document.getElementById('detail-view').style.display = '';
+
+            pollDetailOnce();
+            detailPollTimer = setInterval(pollDetailOnce, 1000);
+        }
+
+        function closeDetail() {
+            clearError();
+            detailSessionId = null;
+            clearInterval(detailPollTimer);
+            detailPollTimer = null;
+            document.getElementById('detail-view').style.display = 'none';
+            document.getElementById('main-view').style.display = '';
+            refreshServers();
+            if (document.getElementById('past-sessions-details').open) loadSessions();
+        }
+
+        async function pollDetailOnce() {
+            if (detailSessionId === null) return;
+            await Promise.all([pollDetailLogs(), pollDetailStats()]);
+        }
+
+        async function pollDetailLogs() {
+            if (detailSessionId === null) return;
+            const r = await fetch(`/api/server/logs?session_id=${detailSessionId}`);
+            if (detailSessionId === null || !r.ok) return;
+            const lines = await r.json();
+            const terminal = document.getElementById('terminal');
+            const atBottom = terminal.scrollTop + terminal.clientHeight >= terminal.scrollHeight - 4;
+            terminal.textContent = lines.join('\n');
+            if (atBottom) terminal.scrollTop = terminal.scrollHeight;
+        }
+
+        async function pollDetailStats() {
+            if (detailSessionId === null) return;
+            const r = await fetch(`/api/server/stats?session_id=${detailSessionId}`);
+            if (!r.ok) {
+                // Process has exited — return to main screen immediately.
+                closeDetail();
+                return;
+            }
+            const s = await r.json();
+            document.getElementById('stat-cpu').textContent = `${s.cpu_percent.toFixed(1)}%`;
+            document.getElementById('stat-ram').textContent = `${s.memory_mb.toFixed(0)} MB`;
+            document.getElementById('stat-uptime').textContent = fmtUptime(s.uptime_seconds);
+            document.getElementById('stat-pid').textContent = s.pid;
+        }
+
+        async function sendCommand() {
+            const input = document.getElementById('cmd-input');
+            const cmd = input.value.trim();
+            if (!cmd || detailSessionId === null) return;
+            input.value = '';
+            const r = await fetch('/api/server/command', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({session_id: detailSessionId, command: cmd}),
+            });
+            if (!r.ok) showError(await apiErrorDetail(r));
+            else await pollDetailLogs();
+        }
+
+        async function stopDetailServer() {
+            const sessionId = detailSessionId;
+            if (sessionId === null) return;
+            document.getElementById('detail-stop-btn').style.display = 'none';
+            document.getElementById('cmd-input').disabled = true;
+            document.getElementById('cmd-send-btn').disabled = true;
+            const r = await fetch(`/api/server/stop?session_id=${sessionId}`, {method: 'POST'});
+            // 404 means the server was already removed — treat as success.
+            if (!r.ok && r.status !== 404) showError(await apiErrorDetail(r));
+        }
+
+        // ── Init ───────────────────────────────────────────────────────────
 
         loadNewWorldVersions();
         loadAvailableVersions();

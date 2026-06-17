@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 import attr
@@ -16,7 +17,13 @@ from .java import is_java_downloaded
 from .java import list_downloaded_java_versions
 from .java import required_java_version
 from .server import MinecraftServer
+from .server import PerfStats
 from .server import ServerInfo
+from .sessions import SessionEntry  # noqa: F401 — re-exported for Litestar schema
+from .sessions import WorldSessions
+from .sessions import allocate_session_id
+from .sessions import list_all_sessions
+from .sessions import read_session_log
 from .state import AppState
 from .worlds import create_world
 from .worlds import ensure_version
@@ -43,11 +50,12 @@ class JavaRequirement:
 
 @attr.s(auto_attribs=True, frozen=True)
 class ServerState:
-    id: int
+    session_id: int
     version: str
     world: str
     memory_mb: int
     running: bool
+    status: str  # "running" | "stopping" | "saving" | "saved"
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -60,6 +68,24 @@ class CreateWorldRequest:
 class StartRequest:
     world: str
     memory_mb: int
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class CommandRequest:
+    session_id: int
+    command: str
+
+
+async def _stop_lifecycle(app_state: AppState, server: MinecraftServer) -> None:
+    await server.wait_for_exit()
+    server.set_status("saving")
+    await asyncio.to_thread(server.save_session)
+    server.set_status("saved")
+    await asyncio.sleep(4)
+    try:
+        app_state.servers.remove(server)
+    except ValueError:
+        pass
 
 
 @get("/", media_type=MediaType.HTML, sync_to_thread=False)
@@ -131,22 +157,23 @@ async def api_create_world(data: CreateWorldRequest, app_state: AppState) -> Non
 def api_servers(app_state: AppState) -> list[ServerState]:
     return [
         ServerState(
-            id=s.get_id(),
+            session_id=s.get_session_id(),
             version=s.get_stats().version,
             world=s.get_stats().world,
             memory_mb=s.get_stats().memory_mb,
             running=s.is_running(),
+            status=s.get_status(),
         )
         for s in app_state.servers
     ]
 
 
 @get("/api/status", sync_to_thread=False)
-def api_status(app_state: AppState, id_num: int) -> bool:
+def api_status(app_state: AppState, session_id: int) -> bool:
     for s in app_state.servers:
-        if s.get_id() == id_num:
+        if s.get_session_id() == session_id:
             return s.is_running()
-    raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail=f"No server with id {id_num}")
+    raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail=f"No server with session id {session_id}")
 
 
 @post("/api/server/start")
@@ -163,17 +190,65 @@ async def api_start(data: StartRequest, app_state: AppState) -> bool:
             status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Unknown data version {world.version}"
         ) from None
     server_info = ServerInfo(version=version_str, world=data.world, memory_mb=data.memory_mb)
-    new_server = MinecraftServer(server_info, app_state.current_id)
-    app_state.current_id += 1
+    new_server = MinecraftServer(server_info, allocate_session_id())
     app_state.servers.append(new_server)
-    await new_server.run()
+    try:
+        await new_server.run()
+    except Exception as e:
+        app_state.servers.remove(new_server)
+        raise HTTPException(status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)) from e
     return new_server.is_running()
 
 
-@post("/api/server/stop")
-async def api_stop(app_state: AppState, id_num: int) -> bool:
+@get("/api/server/logs", sync_to_thread=False)
+def api_server_logs(app_state: AppState, session_id: int) -> list[str]:
     for s in app_state.servers:
-        if s.get_id() == id_num:
-            await s.stop()
-            return s.is_running()
-    raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail=f"No server with id {id_num}")
+        if s.get_session_id() == session_id:
+            return s.get_output()
+    raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail=f"No server with session id {session_id}")
+
+
+@get("/api/server/stats", sync_to_thread=False)
+def api_server_stats(app_state: AppState, session_id: int) -> PerfStats:
+    for s in app_state.servers:
+        if s.get_session_id() == session_id:
+            stats = s.get_perf_stats()
+            if stats is None:
+                raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail=f"Session {session_id} is not running")
+            return stats
+    raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail=f"No server with session id {session_id}")
+
+
+@post("/api/server/command")
+async def api_server_command(data: CommandRequest, app_state: AppState) -> None:
+    for s in app_state.servers:
+        if s.get_session_id() == data.session_id:
+            try:
+                await s.send_command(data.command)
+            except RuntimeError as e:
+                raise HTTPException(status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)) from e
+            return
+    raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail=f"No server with session id {data.session_id}")
+
+
+@post("/api/server/stop")
+async def api_stop(app_state: AppState, session_id: int) -> None:
+    for s in app_state.servers:
+        if s.get_session_id() == session_id:
+            await s.request_stop()
+            asyncio.create_task(_stop_lifecycle(app_state, s))
+            return
+    raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail=f"No server with session id {session_id}")
+
+
+@get("/api/sessions", sync_to_thread=False)
+def api_sessions() -> list[WorldSessions]:
+    return list_all_sessions()
+
+
+@get("/api/sessions/log", sync_to_thread=False)
+def api_session_log(world: str, session_id: int) -> list[str]:
+    try:
+        return read_session_log(world, session_id)
+    except (FileNotFoundError, ValueError) as e:
+        raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail=str(e)) from e

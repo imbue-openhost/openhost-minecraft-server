@@ -15,7 +15,12 @@ from .routes import api_create_world
 from .routes import api_downloaded_versions
 from .routes import api_java_downloaded
 from .routes import api_java_required
+from .routes import api_server_command
+from .routes import api_server_logs
+from .routes import api_server_stats
 from .routes import api_servers
+from .routes import api_session_log
+from .routes import api_sessions
 from .routes import api_start
 from .routes import api_status
 from .routes import api_stop
@@ -71,7 +76,12 @@ app = Litestar(
         api_create_world,
         api_java_downloaded,
         api_java_required,
+        api_server_logs,
+        api_server_stats,
+        api_server_command,
         api_servers,
+        api_sessions,
+        api_session_log,
         api_status,
         api_start,
         api_stop,

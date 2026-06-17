@@ -28,12 +28,12 @@ def _adoptium_os_arch() -> tuple[str, str]:
     return os_name, arch
 
 
-def _data_dir() -> Path:
-    return Path(os.environ["OPENHOST_APP_DATA_DIR"])
+def _temp_dir() -> Path:
+    return Path(os.environ["OPENHOST_APP_TEMP_DIR"])
 
 
 def _jre_base() -> Path:
-    return _data_dir() / "jre"
+    return _temp_dir() / "jre"
 
 
 def _java_bin(java_version: int) -> Path:
@@ -44,7 +44,7 @@ def _java_bin(java_version: int) -> Path:
         if entry.is_dir() and entry.name.startswith(f"jdk-{java_version}."):
             for candidate in entry.rglob("bin/java"):
                 if candidate.is_file():
-                    return candidate
+                    return candidate.resolve()
     raise FileNotFoundError(f"No Java {java_version} JRE found under {base}")
 
 

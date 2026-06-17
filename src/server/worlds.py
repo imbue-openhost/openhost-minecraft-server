@@ -23,6 +23,10 @@ def _data_dir() -> Path:
     return Path(os.environ["OPENHOST_APP_DATA_DIR"])
 
 
+def _temp_dir() -> Path:
+    return Path(os.environ["OPENHOST_APP_TEMP_DIR"])
+
+
 def get_version_string(version: int) -> str:
     return VERSION_MAP[version]
 
@@ -69,14 +73,15 @@ def create_world(name: str, version_str: str) -> None:
     d = _data_dir() / "worlds" / name
     d.mkdir(parents=True, exist_ok=True)
     shutil.copy2(version_jar_path(version_str), d / f"{version_str}.jar")
+    (d / "eula.txt").write_text("eula=true\n")
 
 
 def version_jar_path(version_str: str) -> Path:
-    return _data_dir() / "versions" / f"{version_str}.jar"
+    return _temp_dir() / "versions" / f"{version_str}.jar"
 
 
 def list_downloaded_versions() -> list[str]:
-    d = _data_dir() / "versions"
+    d = _temp_dir() / "versions"
     if not d.exists():
         return []
     return sorted(p.stem for p in d.iterdir() if p.suffix == ".jar")

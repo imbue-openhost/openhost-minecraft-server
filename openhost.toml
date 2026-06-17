@@ -22,3 +22,5 @@ cpu_millicores = 200
 # sqlite = ["main"]
 # Persistent scratch directory for arbitrary app data (uploads, caches, etc).
 app_data = true
+# Non-backed-up scratch space for recreatable downloads: server JARs, Java JREs.
+app_temp_data = true
