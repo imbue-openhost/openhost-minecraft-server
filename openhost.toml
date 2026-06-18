@@ -17,6 +17,31 @@ health_check = "/health"
 memory_mb = 256
 cpu_millicores = 200
 
+[[ports]]
+label = "mc-0"
+container_port = 25565
+host_port = 25565
+
+[[ports]]
+label = "mc-1"
+container_port = 25566
+host_port = 25566
+
+[[ports]]
+label = "mc-2"
+container_port = 25567
+host_port = 25567
+
+[[ports]]
+label = "mc-3"
+container_port = 25568
+host_port = 25568
+
+[[ports]]
+label = "mc-4"
+container_port = 25569
+host_port = 25569
+
 [data]
 # Named sqlite databases provisioned + persisted by OpenHost.
 # sqlite = ["main"]
