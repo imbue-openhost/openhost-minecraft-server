@@ -8,7 +8,7 @@ setup:
 
 # Run the app locally on http://localhost:8080 (auto-reloads on change).
 run:
-    OPENHOST_APP_DATA_DIR=app_data OPENHOST_APP_TEMP_DIR=app_temp_data OPENHOST_SQLITE_WORLDS=db/worlds.db uv run hypercorn server.app:app --bind 0.0.0.0:8080 --reload
+    OPENHOST_APP_DATA_DIR=app_data OPENHOST_APP_TEMP_DIR=app_temp_data OPENHOST_SQLITE_DEFAULT=db/worlds.db uv run hypercorn server.app:app --bind 0.0.0.0:8080 --reload
 
 # Build the container image and run it on http://localhost:8080 (persistent data in app_data/).
 # Uses a separate temp dir from `just run` to avoid mixing macOS and Linux JRE binaries.
@@ -20,7 +20,7 @@ serve:
         -p 25565:25565 -p 25566:25566 -p 25567:25567 -p 25568:25568 -p 25569:25569 \
         -e OPENHOST_APP_DATA_DIR=/app_data \
         -e OPENHOST_APP_TEMP_DIR=/app_temp \
-        -e OPENHOST_SQLITE_WORLDS=/app_data/worlds.db \
+        -e OPENHOST_SQLITE_DEFAULT=/app_data/worlds.db \
         -v "$(pwd)/app_data_linux:/app_data:Z" \
         -v "$(pwd)/app_temp_data_linux:/app_temp:Z" \
         openhost-minecraft-servers

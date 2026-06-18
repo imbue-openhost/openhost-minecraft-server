@@ -26,7 +26,7 @@ def _temp_dir() -> Path:
 
 @contextlib.contextmanager
 def _db() -> Iterator[sqlite3.Connection]:
-    path = Path(os.environ["OPENHOST_SQLITE_WORLDS"])
+    path = Path(os.environ["OPENHOST_SQLITE_DEFAULT"])
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     conn.execute("PRAGMA journal_mode=WAL")
