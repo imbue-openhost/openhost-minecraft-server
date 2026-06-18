@@ -7,6 +7,7 @@ import attr
 class WorldInfo:
     version: int
     name: str
+    port: int = 0
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -20,6 +21,7 @@ class ServerState:
     session_id: int
     version: int
     world: str
+    port: int
     memory_mb: int
     running: bool
     status: str  # "running" | "stopping" | "saving" | "saved"

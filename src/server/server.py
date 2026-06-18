@@ -14,7 +14,27 @@ from server.java import required_java_version
 from server.sessions import allocate_session_id
 from server.sessions import write_session_log
 from server.worlds import get_version
+from server.worlds import get_world_port
 from server.worlds import read_jar_data_version
+
+
+def _write_server_port(world_dir: Path, port: int) -> None:
+    props = world_dir / "server.properties"
+    if props.exists():
+        lines = props.read_text().splitlines()
+        new_lines: list[str] = []
+        updated = False
+        for line in lines:
+            if line.startswith("server-port="):
+                new_lines.append(f"server-port={port}")
+                updated = True
+            else:
+                new_lines.append(line)
+        if not updated:
+            new_lines.append(f"server-port={port}")
+        props.write_text("\n".join(new_lines) + "\n")
+    else:
+        props.write_text(f"server-port={port}\n")
 
 
 def _data_dir() -> Path:
@@ -27,6 +47,7 @@ class MinecraftServer:
         self._memory_mb: int = start_req.memory_mb
         self._session_id: int = allocate_session_id()
         self._version = get_version(start_req.world)
+        self._port: int = get_world_port(start_req.world)
         self._process: asyncio.subprocess.Process | None = None
         self._psutil_proc: psutil.Process | None = None
         self._start_time: float | None = None
@@ -44,6 +65,8 @@ class MinecraftServer:
 
         dv = read_jar_data_version(jar)
         java_bin = await ensure_java(required_java_version(dv))
+
+        _write_server_port(world_dir, self._port)
 
         self._process = await asyncio.create_subprocess_exec(
             str(java_bin),
@@ -161,6 +184,9 @@ class MinecraftServer:
 
     def get_session_id(self) -> int:
         return self._session_id
+
+    def get_port(self) -> int:
+        return self._port
 
     def get_output(self) -> list[str]:
         return list(self._output)

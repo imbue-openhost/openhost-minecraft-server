@@ -267,6 +267,12 @@
                         <input type="checkbox" id="new-world-snapshots" onchange="loadNewWorldVersions()">
                         Include snapshots
                     </label>
+                    <div class="new-world-row" style="align-items:center">
+                        <span style="font-size:0.85rem;color:#555;white-space:nowrap;flex-shrink:0">
+                            Port <span class="help" title="The TCP port players connect to (e.g. :25565). Each world keeps the same port so friends can always reconnect at the same address.">?</span>
+                        </span>
+                        <select id="new-world-port"></select>
+                    </div>
                     <label class="checkbox-label">
                         <input type="checkbox" id="eula-accept" onchange="updateCreateBtn()">
                         I agree to the <a href="https://aka.ms/MinecraftEULA" target="_blank" rel="noopener">Minecraft EULA</a>
@@ -324,6 +330,10 @@
         </div>
 
         <div class="stat-bar">
+            <div class="stat-cell">
+                <div class="stat-label">Port</div>
+                <div class="stat-value" id="detail-port">—</div>
+            </div>
             <div class="stat-cell">
                 <div class="stat-label">CPU</div>
                 <div class="stat-value" id="stat-cpu">—</div>

@@ -8,7 +8,7 @@ setup:
 
 # Run the app locally on http://localhost:8080 (auto-reloads on change).
 run:
-    uv run hypercorn server.app:app --bind 0.0.0.0:8080 --reload
+    OPENHOST_APP_DATA_DIR=app_data OPENHOST_APP_TEMP_DIR=app_temp_data uv run hypercorn server.app:app --bind 0.0.0.0:8080 --reload
 
 # Run the test suite.
 test:
@@ -27,3 +27,7 @@ gen-version-table:
 # Build the container image.
 build:
     docker build -t openhost-minecraft-servers .
+
+# Clean up test files.
+clean:
+    rm -r app_data app_temp_data

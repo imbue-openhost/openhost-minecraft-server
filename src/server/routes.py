@@ -1,6 +1,7 @@
 import asyncio
 from pathlib import Path
 
+import attr
 from litestar import MediaType
 from litestar import get
 from litestar import post
@@ -30,6 +31,8 @@ from server.sessions import list_all_sessions
 from server.sessions import read_session_log
 from server.state import AppState
 from server.version_data import VERSION_MAP
+from server.worlds import MINECRAFT_PORTS
+from server.worlds import assign_world_port
 from server.worlds import create_world
 from server.worlds import ensure_version
 from server.worlds import fetch_available_versions
@@ -94,12 +97,12 @@ def api_java_downloaded() -> list[int]:
 
 
 @get("/api/java/required", sync_to_thread=False)
-def api_java_required(version_str: str) -> JavaRequirement:
+def api_java_required(mc_version: str) -> JavaRequirement:
     try:
-        dv = get_data_version(version_str)
+        dv = get_data_version(mc_version)
     except KeyError:
         raise HTTPException(
-            status_code=HTTP_404_NOT_FOUND, detail=f"Unknown Minecraft version: {version_str!r}"
+            status_code=HTTP_404_NOT_FOUND, detail=f"Unknown Minecraft version: {mc_version!r}"
         ) from None
     try:
         java_ver = required_java_version(dv)
@@ -116,7 +119,20 @@ async def api_create_world(data: WorldInfo, app_state: AppState) -> None:
         await ensure_java(required_java_version(dv))
     except (RuntimeError, ValueError) as e:
         raise HTTPException(status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)) from e
-    create_world(data)
+    used_ports = {w.port for w in app_state.worlds}
+    if data.port != 0:
+        if data.port not in MINECRAFT_PORTS or data.port in used_ports:
+            raise HTTPException(
+                status_code=HTTP_400_BAD_REQUEST,
+                detail=f"Port {data.port} is not available",
+            )
+        port = data.port
+    else:
+        try:
+            port = assign_world_port(used_ports)
+        except RuntimeError as e:
+            raise HTTPException(status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)) from e
+    create_world(attr.evolve(data, port=port))
     world = get_world(data.name)
     if world is not None:
         app_state.worlds.append(world)
@@ -130,6 +146,7 @@ def api_servers(app_state: AppState) -> list[ServerState]:
             session_id=s.get_session_id(),
             version=s.get_version(),
             world=s.get_world(),
+            port=s.get_port(),
             memory_mb=s.get_memory_mb(),
             running=s.is_running(),
             status=s.get_status(),

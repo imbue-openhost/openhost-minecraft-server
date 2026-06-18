@@ -87,8 +87,9 @@ class TestVersionTableParser:
 
 
 class TestMinecraftServer:
-    def _make(self, monkeypatch: pytest.MonkeyPatch, version: int = 4325) -> MinecraftServer:
+    def _make(self, monkeypatch: pytest.MonkeyPatch, version: int = 4325, port: int = 25565) -> MinecraftServer:
         monkeypatch.setattr("server.server.get_version", lambda world: version)
+        monkeypatch.setattr("server.server.get_world_port", lambda world: port)
         monkeypatch.setattr("server.server.allocate_session_id", lambda: 0)
         return MinecraftServer(StartRequest(world="test", memory_mb=2048))
 
@@ -97,15 +98,17 @@ class TestMinecraftServer:
 
     def test_get_session_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("server.server.get_version", lambda world: 4325)
+        monkeypatch.setattr("server.server.get_world_port", lambda world: 25565)
         monkeypatch.setattr("server.server.allocate_session_id", lambda: 7)
         s = MinecraftServer(StartRequest(world="test", memory_mb=2048))
         assert s.get_session_id() == 7
 
     def test_getters_return_correct_values(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        s = self._make(monkeypatch, version=4325)
+        s = self._make(monkeypatch, version=4325, port=25565)
         assert s.get_world() == "test"
         assert s.get_version() == 4325
         assert s.get_memory_mb() == 2048
+        assert s.get_port() == 25565
 
 
 class TestVersionLookup:
@@ -131,15 +134,18 @@ class TestVersionLookup:
 class TestAppStateWorldInsertion:
     def test_worlds_inserted_alphabetically(self) -> None:
         state = AppState()
-        for name in ["gamma", "alpha", "beta"]:
-            state.worlds.append(WorldInfo(version=100, name=name))
+        for i, name in enumerate(["gamma", "alpha", "beta"]):
+            state.worlds.append(WorldInfo(version=100, name=name, port=25565 + i))
             state.worlds.sort(key=lambda w: w.name)
         assert [w.name for w in state.worlds] == ["alpha", "beta", "gamma"]
 
     def test_world_inserted_into_existing_sorted_list(self) -> None:
         state = AppState()
-        state.worlds = [WorldInfo(version=100, name="apple"), WorldInfo(version=100, name="cherry")]
-        new_world = WorldInfo(version=100, name="banana")
+        state.worlds = [
+            WorldInfo(version=100, name="apple", port=25565),
+            WorldInfo(version=100, name="cherry", port=25566),
+        ]
+        new_world = WorldInfo(version=100, name="banana", port=25567)
         state.worlds.append(new_world)
         state.worlds.sort(key=lambda w: w.name)
         assert [w.name for w in state.worlds] == ["apple", "banana", "cherry"]

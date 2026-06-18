@@ -1,8 +1,11 @@
 let downloadedVersions = new Set();
+let usedPorts = new Set();
 let detailSessionId = null;
 let detailPollTimer = null;
 let versionMap = {};        // MC version string → data version int
 let reverseVersionMap = {}; // data version int → MC version string
+
+const MINECRAFT_PORTS = [25565, 25566, 25567, 25568, 25569];
 
 // ── Utilities ──────────────────────────────────────────────────────
 
@@ -108,10 +111,11 @@ async function loadDownloadedJavaVersions() {
 
 async function loadWorlds() {
     const worlds = await fetch('/api/worlds').then(r => r.json());
+    usedPorts = new Set(worlds.map(w => w.port).filter(p => p > 0));
     const sel = document.getElementById('world');
     const startBtn = document.getElementById('start-btn');
     if (worlds.length) {
-        sel.innerHTML = worlds.map(w => `<option value="${w.name}">${w.name} (${escapeHtml(reverseVersionMap[w.version] || String(w.version))})</option>`).join('');
+        sel.innerHTML = worlds.map(w => `<option value="${w.name}">${w.name} (${escapeHtml(reverseVersionMap[w.version] || String(w.version))} · port ${w.port})</option>`).join('');
         sel.classList.remove('empty');
         startBtn.disabled = false;
     } else {
@@ -174,15 +178,28 @@ function closeSession() {
 
 // ── New world form ─────────────────────────────────────────────────
 
+function populatePortSelect() {
+    const available = MINECRAFT_PORTS.filter(p => !usedPorts.has(p));
+    const sel = document.getElementById('new-world-port');
+    if (!available.length) {
+        sel.innerHTML = '<option disabled selected value="">No ports available</option>';
+    } else {
+        sel.innerHTML = available.map(p => `<option value="${p}">${p}</option>`).join('');
+    }
+    updateCreateBtn();
+}
+
 function updateCreateBtn() {
+    const portSel = document.getElementById('new-world-port');
     document.getElementById('create-btn').disabled =
-        !document.getElementById('eula-accept').checked;
+        !document.getElementById('eula-accept').checked || !portSel.value;
 }
 
 function toggleNewWorld() {
     const form = document.getElementById('new-world-form');
     const open = form.classList.toggle('open');
     if (open) {
+        populatePortSelect();
         document.getElementById('new-world-name').focus();
     } else {
         document.getElementById('new-world-name').value = '';
@@ -194,7 +211,8 @@ function toggleNewWorld() {
 async function createWorld() {
     const name = document.getElementById('new-world-name').value.trim();
     const version = document.getElementById('new-world-version').value;
-    if (!name || !version || !document.getElementById('eula-accept').checked) return;
+    const port = parseInt(document.getElementById('new-world-port').value);
+    if (!name || !version || !port || !document.getElementById('eula-accept').checked) return;
     clearError();
 
     const versionInt = versionMap[version];
@@ -223,7 +241,7 @@ async function createWorld() {
     const r = await fetch('/api/worlds', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({name, version: versionInt}),
+        body: JSON.stringify({name, version: versionInt, port}),
     });
 
     indicator.classList.remove('visible');
@@ -245,11 +263,11 @@ function renderServerCard(s) {
         <div class="server-card running">
             <div class="server-meta">
                 <div class="server-title">${escapeHtml(versionStr)} &middot; ${escapeHtml(s.world)}</div>
-                <div class="server-detail">${s.memory_mb} MB &nbsp;&middot;&nbsp; Session #${s.session_id}</div>
+                <div class="server-detail">${s.memory_mb} MB &nbsp;&middot;&nbsp; port ${s.port} &nbsp;&middot;&nbsp; Session #${s.session_id}</div>
             </div>
             <div style="display:flex;align-items:center;gap:8px">
                 <span class="badge running">Running</span>
-                <button onclick="openDetail(${s.session_id}, ${jsAttr(versionStr)}, ${jsAttr(s.world)})">View</button>
+                <button onclick="openDetail(${s.session_id}, ${jsAttr(versionStr)}, ${jsAttr(s.world)}, ${s.port})">View</button>
                 <button class="btn-stop" onclick="stopServer(${s.session_id})">Stop</button>
             </div>
         </div>`;
@@ -260,7 +278,7 @@ function renderServerCard(s) {
     <div class="server-card">
         <div class="server-meta">
             <div class="server-title">${escapeHtml(versionStr)} &middot; ${escapeHtml(s.world)}</div>
-            <div class="server-detail">${s.memory_mb} MB &nbsp;&middot;&nbsp; Session #${s.session_id}</div>
+            <div class="server-detail">${s.memory_mb} MB &nbsp;&middot;&nbsp; port ${s.port} &nbsp;&middot;&nbsp; Session #${s.session_id}</div>
         </div>
         <div style="display:flex;align-items:center;gap:8px">
             <span class="badge">${label}</span>
@@ -302,10 +320,11 @@ async function refreshServers() {
 
 // ── Live detail view ───────────────────────────────────────────────
 
-function openDetail(sessionId, version, world) {
+function openDetail(sessionId, version, world, port) {
     detailSessionId = sessionId;
     document.getElementById('detail-version').textContent = version;
     document.getElementById('detail-world').textContent = world;
+    document.getElementById('detail-port').textContent = `${port}`;
     document.getElementById('terminal').textContent = '';
     document.getElementById('detail-stop-btn').style.display = '';
     document.getElementById('cmd-input').disabled = false;

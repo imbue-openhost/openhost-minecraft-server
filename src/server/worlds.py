@@ -11,6 +11,7 @@ from server.datatypes import WorldInfo
 from server.version_data import VERSION_MAP
 
 _MANIFEST_URL = "https://launchermeta.mojang.com/mc/game/version_manifest_v2.json"
+MINECRAFT_PORTS: tuple[int, ...] = tuple(range(25565, 25570))
 
 
 def _data_dir() -> Path:
@@ -19,6 +20,46 @@ def _data_dir() -> Path:
 
 def _temp_dir() -> Path:
     return Path(os.environ["OPENHOST_APP_TEMP_DIR"])
+
+
+def _read_ports() -> dict[str, int]:
+    path = _data_dir() / "ports.txt"
+    if not path.exists():
+        return {}
+    result: dict[str, int] = {}
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        name, _, port_str = line.partition("=")
+        result[name] = int(port_str)
+    return result
+
+
+def _write_ports(ports: dict[str, int]) -> None:
+    path = _data_dir() / "ports.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(f"{name}={port}\n" for name, port in sorted(ports.items())))
+
+
+def get_world_port(name: str) -> int:
+    ports = _read_ports()
+    if name not in ports:
+        raise KeyError(f"No port assigned for world {name!r}")
+    return ports[name]
+
+
+def save_world_port(name: str, port: int) -> None:
+    ports = _read_ports()
+    ports[name] = port
+    _write_ports(ports)
+
+
+def assign_world_port(used_ports: set[int]) -> int:
+    for port in MINECRAFT_PORTS:
+        if port not in used_ports:
+            return port
+    raise RuntimeError(f"No Minecraft ports available (pool exhausted: {MINECRAFT_PORTS[0]}-{MINECRAFT_PORTS[-1]})")
 
 
 def get_version_string(version: int) -> str:
@@ -51,7 +92,11 @@ def get_version(name: str) -> int:
 
 
 def get_world(name: str) -> WorldInfo | None:
-    return WorldInfo(version=get_version(name), name=name)
+    try:
+        version = get_version(name)
+    except LookupError:
+        return None
+    return WorldInfo(version=version, name=name, port=get_world_port(name))
 
 
 def load_worlds() -> list[WorldInfo]:
@@ -72,6 +117,7 @@ def create_world(info: WorldInfo) -> None:
     d.mkdir(parents=True, exist_ok=True)
     shutil.copy2(version_jar_path(info.version), d / f"{get_version_string(info.version)}.jar")
     (d / "eula.txt").write_text("eula=true\n")
+    save_world_port(info.name, info.port)
 
 
 def version_jar_path(version: int) -> Path:
