@@ -14,6 +14,3 @@ Supports running arbitrary numbers of servers as wanted. Each one can be assigne
 - app-data/versions: different Minecraft JARs are stored here.
 - app-data/worlds: here, each world is stored in a different directory, containing standard Minecraft data, as well as a copy of the JAR for the corresponding version. On loadup, previous worlds (with JARs) are detected from here. 
 Modifying these directories while the app is running, especially while servers are running, is not recommended. 
-
-## jvm arguments
-JVM arguments are customizable, but use optimized flags for runtime and garbage collection by default for performance. 

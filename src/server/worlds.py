@@ -5,18 +5,12 @@ import shutil
 import zipfile
 from pathlib import Path
 
-import attr
 import httpx
 
-from .version_data import VERSION_MAP
+from server.datatypes import WorldInfo
+from server.version_data import VERSION_MAP
 
 _MANIFEST_URL = "https://launchermeta.mojang.com/mc/game/version_manifest_v2.json"
-
-
-@attr.s(auto_attribs=True, frozen=True)
-class WorldInfo:
-    version: int  # official data version from version.json inside the server JAR
-    world: str
 
 
 def _data_dir() -> Path:
@@ -48,12 +42,16 @@ def read_jar_data_version(jar_path: Path) -> int:
     return world_version
 
 
-def get_world(name: str) -> WorldInfo | None:
+def get_version(name: str) -> int:
     d = _data_dir() / "worlds" / name
     jars = list(d.glob("*.jar"))
     if not jars:
-        return None
-    return WorldInfo(version=read_jar_data_version(jars[0]), world=name)
+        raise LookupError(f"World with name {name} does not exist")
+    return read_jar_data_version(jars[0])
+
+
+def get_world(name: str) -> WorldInfo | None:
+    return WorldInfo(version=get_version(name), name=name)
 
 
 def load_worlds() -> list[WorldInfo]:
@@ -69,15 +67,15 @@ def load_worlds() -> list[WorldInfo]:
     return result
 
 
-def create_world(name: str, version_str: str) -> None:
-    d = _data_dir() / "worlds" / name
+def create_world(info: WorldInfo) -> None:
+    d = _data_dir() / "worlds" / info.name
     d.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(version_jar_path(version_str), d / f"{version_str}.jar")
+    shutil.copy2(version_jar_path(info.version), d / f"{get_version_string(info.version)}.jar")
     (d / "eula.txt").write_text("eula=true\n")
 
 
-def version_jar_path(version_str: str) -> Path:
-    return _temp_dir() / "versions" / f"{version_str}.jar"
+def version_jar_path(version: int) -> Path:
+    return _temp_dir() / "versions" / f"{get_version_string(version)}.jar"
 
 
 def list_downloaded_versions() -> list[str]:
@@ -87,7 +85,8 @@ def list_downloaded_versions() -> list[str]:
     return sorted(p.stem for p in d.iterdir() if p.suffix == ".jar")
 
 
-async def download_version(version_str: str) -> None:
+async def download_version(version: int) -> None:
+    version_str = get_version_string(version)
     try:
         async with httpx.AsyncClient() as client:
             manifest_r = await client.get(_MANIFEST_URL, timeout=10)
@@ -101,7 +100,7 @@ async def download_version(version_str: str) -> None:
             server_dl = meta_r.json()["downloads"]["server"]
             jar_url: str = server_dl["url"]
             expected_sha1: str = server_dl["sha1"]
-            dest = version_jar_path(version_str)
+            dest = version_jar_path(version)
             dest.parent.mkdir(parents=True, exist_ok=True)
             h = hashlib.sha1()
             with dest.open("wb") as f:
@@ -121,9 +120,9 @@ async def download_version(version_str: str) -> None:
         raise RuntimeError(f"Network error while downloading Minecraft {version_str}: {e}") from e
 
 
-async def ensure_version(version_str: str) -> None:
-    if not version_jar_path(version_str).exists():
-        await download_version(version_str)
+async def ensure_version(version: int) -> None:
+    if not version_jar_path(version).exists():
+        await download_version(version)
 
 
 async def fetch_available_versions(include_snapshots: bool = False) -> list[str]:

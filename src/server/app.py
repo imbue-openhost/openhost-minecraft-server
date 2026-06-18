@@ -7,28 +7,36 @@ from litestar import Request
 from litestar import get
 from litestar.datastructures import State
 from litestar.di import Provide
+from litestar.enums import ScopeType
 from litestar.response import Response
 from litestar.status_codes import HTTP_500_INTERNAL_SERVER_ERROR
+from litestar.types import ASGIApp
+from litestar.types import Message
+from litestar.types import Receive
+from litestar.types import Scope
+from litestar.types import Send
 from loguru import logger
 
-from .routes import api_create_world
-from .routes import api_downloaded_versions
-from .routes import api_java_downloaded
-from .routes import api_java_required
-from .routes import api_server_command
-from .routes import api_server_logs
-from .routes import api_server_stats
-from .routes import api_servers
-from .routes import api_session_log
-from .routes import api_sessions
-from .routes import api_start
-from .routes import api_status
-from .routes import api_stop
-from .routes import api_versions
-from .routes import api_worlds
-from .routes import index
-from .state import AppState
-from .worlds import load_worlds
+from server.routes import api_create_world
+from server.routes import api_downloaded_versions
+from server.routes import api_java_downloaded
+from server.routes import api_java_required
+from server.routes import api_server_command
+from server.routes import api_server_logs
+from server.routes import api_server_stats
+from server.routes import api_servers
+from server.routes import api_session_log
+from server.routes import api_sessions
+from server.routes import api_start
+from server.routes import api_status
+from server.routes import api_stop
+from server.routes import api_versions
+from server.routes import api_versions_map
+from server.routes import api_worlds
+from server.routes import app_js
+from server.routes import index
+from server.state import AppState
+from server.worlds import load_worlds
 
 
 def provide_app_state(state: State) -> AppState:
@@ -60,6 +68,27 @@ def health() -> HealthStatus:
     return HealthStatus(status="ok")
 
 
+class _AccessLog:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != ScopeType.HTTP:
+            await self.app(scope, receive, send)
+            return
+
+        status: int = 0
+
+        async def _capture(message: Message) -> None:
+            nonlocal status
+            if message["type"] == "http.response.start":
+                status = message["status"]
+            await send(message)
+
+        await self.app(scope, receive, _capture)
+        logger.info("{} {} {}", scope["method"], scope["path"], status)
+
+
 def _unhandled_exception_handler(request: Request[Any, Any, Any], exc: Exception) -> Response[dict[str, str]]:
     logger.exception("Unhandled exception on {} {}", request.method, request.url)
     detail = str(exc) or type(exc).__name__
@@ -70,7 +99,9 @@ app = Litestar(
     route_handlers=[
         health,
         index,
+        app_js,
         api_versions,
+        api_versions_map,
         api_downloaded_versions,
         api_worlds,
         api_create_world,
@@ -86,6 +117,7 @@ app = Litestar(
         api_start,
         api_stop,
     ],
+    middleware=[_AccessLog],
     dependencies={"app_state": Provide(provide_app_state, sync_to_thread=False)},
     on_startup=[startup],
     on_shutdown=[shutdown],

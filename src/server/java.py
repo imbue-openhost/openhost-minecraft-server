@@ -7,7 +7,7 @@ from pathlib import Path
 
 import httpx
 
-from .version_data import JAVA_VERSION_TABLE as _JAVA_VERSION_TABLE
+from server.version_data import JAVA_VERSION_TABLE as _JAVA_VERSION_TABLE
 
 _ADOPTIUM_BASE = "https://api.adoptium.net/v3/binary/latest"
 

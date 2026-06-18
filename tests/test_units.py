@@ -9,12 +9,12 @@ from typing import Any
 import httpx
 import pytest
 
+from server.datatypes import StartRequest
+from server.datatypes import WorldInfo
 from server.java import required_java_version
 from server.server import MinecraftServer
-from server.server import ServerInfo
 from server.state import AppState
 from server.version_data import VERSION_MAP
-from server.worlds import WorldInfo
 from server.worlds import download_version
 from server.worlds import ensure_version
 from server.worlds import fetch_available_versions
@@ -87,21 +87,25 @@ class TestVersionTableParser:
 
 
 class TestMinecraftServer:
-    def _make(self, session_id: int = 0) -> MinecraftServer:
-        return MinecraftServer(ServerInfo(version="1.21.5", world="test", memory_mb=2048), session_id)
+    def _make(self, monkeypatch: pytest.MonkeyPatch, version: int = 4325) -> MinecraftServer:
+        monkeypatch.setattr("server.server.get_version", lambda world: version)
+        monkeypatch.setattr("server.server.allocate_session_id", lambda: 0)
+        return MinecraftServer(StartRequest(world="test", memory_mb=2048))
 
-    def test_initially_not_running(self) -> None:
-        assert not self._make().is_running()
+    def test_initially_not_running(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert not self._make(monkeypatch).is_running()
 
-    def test_get_session_id(self) -> None:
-        assert self._make(session_id=7).get_session_id() == 7
+    def test_get_session_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("server.server.get_version", lambda world: 4325)
+        monkeypatch.setattr("server.server.allocate_session_id", lambda: 7)
+        s = MinecraftServer(StartRequest(world="test", memory_mb=2048))
+        assert s.get_session_id() == 7
 
-    def test_get_stats_returns_server_info(self) -> None:
-        s = self._make()
-        stats = s.get_stats()
-        assert stats.world == "test"
-        assert stats.version == "1.21.5"
-        assert stats.memory_mb == 2048
+    def test_getters_return_correct_values(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        s = self._make(monkeypatch, version=4325)
+        assert s.get_world() == "test"
+        assert s.get_version() == 4325
+        assert s.get_memory_mb() == 2048
 
 
 class TestVersionLookup:
@@ -128,17 +132,17 @@ class TestAppStateWorldInsertion:
     def test_worlds_inserted_alphabetically(self) -> None:
         state = AppState()
         for name in ["gamma", "alpha", "beta"]:
-            state.worlds.append(WorldInfo(version=100, world=name))
-            state.worlds.sort(key=lambda w: w.world)
-        assert [w.world for w in state.worlds] == ["alpha", "beta", "gamma"]
+            state.worlds.append(WorldInfo(version=100, name=name))
+            state.worlds.sort(key=lambda w: w.name)
+        assert [w.name for w in state.worlds] == ["alpha", "beta", "gamma"]
 
     def test_world_inserted_into_existing_sorted_list(self) -> None:
         state = AppState()
-        state.worlds = [WorldInfo(version=100, world="apple"), WorldInfo(version=100, world="cherry")]
-        new_world = WorldInfo(version=100, world="banana")
+        state.worlds = [WorldInfo(version=100, name="apple"), WorldInfo(version=100, name="cherry")]
+        new_world = WorldInfo(version=100, name="banana")
         state.worlds.append(new_world)
-        state.worlds.sort(key=lambda w: w.world)
-        assert [w.world for w in state.worlds] == ["apple", "banana", "cherry"]
+        state.worlds.sort(key=lambda w: w.name)
+        assert [w.name for w in state.worlds] == ["apple", "banana", "cherry"]
 
 
 # ── httpx mock helpers ────────────────────────────────────────────────────────
@@ -201,6 +205,9 @@ _JAR_BYTES = b"fake-jar-content"
 _JAR_SHA1 = hashlib.sha1(_JAR_BYTES).hexdigest()
 _META = {"downloads": {"server": {"url": "http://files.example/server.jar", "sha1": _JAR_SHA1}}}
 
+# Data version int for MC 1.21.5
+_DV_1_21_5 = 4325
+
 
 # ── tests ─────────────────────────────────────────────────────────────────────
 
@@ -240,8 +247,8 @@ class TestDownloadVersion:
         monkeypatch.setenv("OPENHOST_APP_TEMP_DIR", str(tmp_path))
         client = _SequentialClient([_JsonResponse(_MANIFEST), _JsonResponse(_META)], stream_chunks=[_JAR_BYTES])
         monkeypatch.setattr(httpx, "AsyncClient", lambda: client)
-        _run(download_version("1.21.5"))
-        assert version_jar_path("1.21.5").read_bytes() == _JAR_BYTES
+        _run(download_version(_DV_1_21_5))
+        assert version_jar_path(_DV_1_21_5).read_bytes() == _JAR_BYTES
 
     def test_unknown_version_raises_runtime_error(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.setenv("OPENHOST_APP_DATA_DIR", str(tmp_path))
@@ -249,7 +256,7 @@ class TestDownloadVersion:
         manifest = {"versions": [{"id": "1.20.0", "type": "release", "url": "http://x"}]}
         monkeypatch.setattr(httpx, "AsyncClient", lambda: _SequentialClient([_JsonResponse(manifest)]))
         with pytest.raises(RuntimeError, match="Unknown Minecraft version: 1.21.5"):
-            _run(download_version("1.21.5"))
+            _run(download_version(_DV_1_21_5))
 
     def test_sha1_mismatch_raises_and_cleans_up(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.setenv("OPENHOST_APP_DATA_DIR", str(tmp_path))
@@ -258,15 +265,15 @@ class TestDownloadVersion:
         client = _SequentialClient([_JsonResponse(_MANIFEST), _JsonResponse(bad_meta)], stream_chunks=[_JAR_BYTES])
         monkeypatch.setattr(httpx, "AsyncClient", lambda: client)
         with pytest.raises(RuntimeError, match="SHA1 mismatch"):
-            _run(download_version("1.21.5"))
-        assert not version_jar_path("1.21.5").exists()
+            _run(download_version(_DV_1_21_5))
+        assert not version_jar_path(_DV_1_21_5).exists()
 
     def test_timeout_raises_runtime_error(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.setenv("OPENHOST_APP_DATA_DIR", str(tmp_path))
         monkeypatch.setenv("OPENHOST_APP_TEMP_DIR", str(tmp_path))
         monkeypatch.setattr(httpx, "AsyncClient", lambda: _SequentialClient([httpx.TimeoutException("")]))
         with pytest.raises(RuntimeError, match="Timed out"):
-            _run(download_version("1.21.5"))
+            _run(download_version(_DV_1_21_5))
 
     def test_http_error_raises_runtime_error(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.setenv("OPENHOST_APP_DATA_DIR", str(tmp_path))
@@ -274,43 +281,43 @@ class TestDownloadVersion:
         exc = httpx.HTTPStatusError("", request=httpx.Request("GET", "http://x"), response=httpx.Response(404))
         monkeypatch.setattr(httpx, "AsyncClient", lambda: _SequentialClient([exc]))
         with pytest.raises(RuntimeError, match="HTTP 404"):
-            _run(download_version("1.21.5"))
+            _run(download_version(_DV_1_21_5))
 
     def test_request_error_raises_runtime_error(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.setenv("OPENHOST_APP_DATA_DIR", str(tmp_path))
         monkeypatch.setenv("OPENHOST_APP_TEMP_DIR", str(tmp_path))
         monkeypatch.setattr(httpx, "AsyncClient", lambda: _SequentialClient([httpx.ConnectError("")]))
         with pytest.raises(RuntimeError, match="Network error"):
-            _run(download_version("1.21.5"))
+            _run(download_version(_DV_1_21_5))
 
 
 class TestEnsureVersion:
     def test_skips_download_if_jar_exists(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.setenv("OPENHOST_APP_DATA_DIR", str(tmp_path))
         monkeypatch.setenv("OPENHOST_APP_TEMP_DIR", str(tmp_path))
-        jar = version_jar_path("1.21.5")
+        jar = version_jar_path(_DV_1_21_5)
         jar.parent.mkdir(parents=True, exist_ok=True)
         jar.write_bytes(b"existing")
-        called: list[str] = []
+        called: list[int] = []
 
-        async def _fake_download(v: str) -> None:
+        async def _fake_download(v: int) -> None:
             called.append(v)
 
         monkeypatch.setattr("server.worlds.download_version", _fake_download)
-        _run(ensure_version("1.21.5"))
+        _run(ensure_version(_DV_1_21_5))
         assert called == []
 
     def test_downloads_if_jar_missing(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         monkeypatch.setenv("OPENHOST_APP_DATA_DIR", str(tmp_path))
         monkeypatch.setenv("OPENHOST_APP_TEMP_DIR", str(tmp_path))
-        called: list[str] = []
+        called: list[int] = []
 
-        async def _fake_download(v: str) -> None:
+        async def _fake_download(v: int) -> None:
             called.append(v)
 
         monkeypatch.setattr("server.worlds.download_version", _fake_download)
-        _run(ensure_version("1.21.5"))
-        assert called == ["1.21.5"]
+        _run(ensure_version(_DV_1_21_5))
+        assert called == [_DV_1_21_5]
 
 
 class TestRequiredJavaVersion:
