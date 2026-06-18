@@ -13,7 +13,7 @@ run:
 # Build the container image and run it on http://localhost:8080 (persistent data in app_data/).
 # Uses a separate temp dir from `just run` to avoid mixing macOS and Linux JRE binaries.
 serve:
-    podman build -t openhost-minecraft-servers .
+    podman build -t openhost-minecraft-server .
     mkdir -p app_data_linux app_temp_data_linux
     podman run --rm -it \
         -p 8080:8080 \
@@ -23,7 +23,7 @@ serve:
         -e OPENHOST_SQLITE_DEFAULT=/app_data/worlds.db \
         -v "$(pwd)/app_data_linux:/app_data:Z" \
         -v "$(pwd)/app_temp_data_linux:/app_temp:Z" \
-        openhost-minecraft-servers
+        openhost-minecraft-server
 
 # Run the test suite.
 test:
@@ -41,7 +41,7 @@ gen-version-table:
 
 # Build the container image.
 build:
-    docker build -t openhost-minecraft-servers .
+    docker build -t openhost-minecraft-server .
 
 # Clean up local data and cached JREs.
 clean:

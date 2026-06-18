@@ -452,7 +452,7 @@ wheels = [
 ]
 
 [[package]]
-name = "openhost-minecraft-servers"
+name = "openhost-minecraft-server"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
