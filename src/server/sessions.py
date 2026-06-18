@@ -14,7 +14,7 @@ def _data_dir() -> Path:
 
 def allocate_session_id() -> int:
     """Read, increment, and persist the global session counter. Returns the new ID."""
-    path = _data_dir() / "session_counter"
+    path = _data_dir() / "session_counter.txt"
     try:
         current = int(path.read_text().strip())
     except (FileNotFoundError, ValueError):

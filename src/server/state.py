@@ -1,5 +1,5 @@
-from .server import MinecraftServer
-from .worlds import WorldInfo
+from server.datatypes import WorldInfo
+from server.server import MinecraftServer
 
 
 class AppState:

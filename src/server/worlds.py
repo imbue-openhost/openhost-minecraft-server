@@ -1,22 +1,19 @@
+import contextlib
 import hashlib
 import json
 import os
-import shutil
+import sqlite3
 import zipfile
+from collections.abc import Iterator
 from pathlib import Path
 
-import attr
 import httpx
 
-from .version_data import VERSION_MAP
+from server.datatypes import WorldInfo
+from server.version_data import VERSION_MAP
 
 _MANIFEST_URL = "https://launchermeta.mojang.com/mc/game/version_manifest_v2.json"
-
-
-@attr.s(auto_attribs=True, frozen=True)
-class WorldInfo:
-    version: int  # official data version from version.json inside the server JAR
-    world: str
+MINECRAFT_PORTS: tuple[int, ...] = tuple(range(25565, 25570))
 
 
 def _data_dir() -> Path:
@@ -25,6 +22,64 @@ def _data_dir() -> Path:
 
 def _temp_dir() -> Path:
     return Path(os.environ["OPENHOST_APP_TEMP_DIR"])
+
+
+@contextlib.contextmanager
+def _db() -> Iterator[sqlite3.Connection]:
+    path = Path(os.environ["OPENHOST_SQLITE_WORLDS"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path))
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS worlds (
+            name    TEXT PRIMARY KEY,
+            port    INTEGER NOT NULL,
+            version INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    conn.commit()
+    try:
+        yield conn
+    except Exception:
+        conn.rollback()
+        raise
+    else:
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_world_port(name: str) -> int:
+    with _db() as conn:
+        row = conn.execute("SELECT port FROM worlds WHERE name = ?", (name,)).fetchone()
+    if row is None:
+        raise KeyError(f"No port assigned for world {name!r}")
+    return int(row[0])
+
+
+def save_world_port(name: str, port: int) -> None:
+    with _db() as conn:
+        conn.execute(
+            "INSERT INTO worlds (name, port, version) VALUES (?, ?, 0) "
+            "ON CONFLICT(name) DO UPDATE SET port = excluded.port",
+            (name, port),
+        )
+
+
+def save_world_info(name: str, port: int, version: int) -> None:
+    with _db() as conn:
+        conn.execute(
+            "INSERT INTO worlds (name, port, version) VALUES (?, ?, ?) "
+            "ON CONFLICT(name) DO UPDATE SET port = excluded.port, version = excluded.version",
+            (name, port, version),
+        )
+
+
+def assign_world_port(used_ports: set[int]) -> int:
+    for port in MINECRAFT_PORTS:
+        if port not in used_ports:
+            return port
+    raise RuntimeError(f"No Minecraft ports available (pool exhausted: {MINECRAFT_PORTS[0]}-{MINECRAFT_PORTS[-1]})")
 
 
 def get_version_string(version: int) -> str:
@@ -48,12 +103,33 @@ def read_jar_data_version(jar_path: Path) -> int:
     return world_version
 
 
-def get_world(name: str) -> WorldInfo | None:
+def get_version(name: str) -> int:
+    with _db() as conn:
+        row = conn.execute("SELECT version FROM worlds WHERE name = ?", (name,)).fetchone()
+    if row is not None and int(row[0]) != 0:
+        return int(row[0])
+    # Fallback: read from a JAR left in the world dir (pre-migration worlds).
     d = _data_dir() / "worlds" / name
     jars = list(d.glob("*.jar"))
     if not jars:
+        raise LookupError(f"No version recorded and no JAR found for world {name!r}")
+    return read_jar_data_version(jars[0])
+
+
+def get_world(name: str) -> WorldInfo | None:
+    if not (_data_dir() / "worlds" / name).is_dir():
         return None
-    return WorldInfo(version=read_jar_data_version(jars[0]), world=name)
+    with _db() as conn:
+        row = conn.execute("SELECT port, version FROM worlds WHERE name = ?", (name,)).fetchone()
+    if row is None:
+        return None
+    port, version = int(row[0]), int(row[1])
+    if version == 0:
+        try:
+            version = get_version(name)
+        except LookupError:
+            return None
+    return WorldInfo(version=version, name=name, port=port)
 
 
 def load_worlds() -> list[WorldInfo]:
@@ -69,15 +145,15 @@ def load_worlds() -> list[WorldInfo]:
     return result
 
 
-def create_world(name: str, version_str: str) -> None:
-    d = _data_dir() / "worlds" / name
+def create_world(info: WorldInfo) -> None:
+    d = _data_dir() / "worlds" / info.name
     d.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(version_jar_path(version_str), d / f"{version_str}.jar")
     (d / "eula.txt").write_text("eula=true\n")
+    save_world_info(info.name, info.port, info.version)
 
 
-def version_jar_path(version_str: str) -> Path:
-    return _temp_dir() / "versions" / f"{version_str}.jar"
+def version_jar_path(version: int) -> Path:
+    return _temp_dir() / "versions" / f"{get_version_string(version)}.jar"
 
 
 def list_downloaded_versions() -> list[str]:
@@ -87,7 +163,8 @@ def list_downloaded_versions() -> list[str]:
     return sorted(p.stem for p in d.iterdir() if p.suffix == ".jar")
 
 
-async def download_version(version_str: str) -> None:
+async def download_version(version: int) -> None:
+    version_str = get_version_string(version)
     try:
         async with httpx.AsyncClient() as client:
             manifest_r = await client.get(_MANIFEST_URL, timeout=10)
@@ -101,7 +178,7 @@ async def download_version(version_str: str) -> None:
             server_dl = meta_r.json()["downloads"]["server"]
             jar_url: str = server_dl["url"]
             expected_sha1: str = server_dl["sha1"]
-            dest = version_jar_path(version_str)
+            dest = version_jar_path(version)
             dest.parent.mkdir(parents=True, exist_ok=True)
             h = hashlib.sha1()
             with dest.open("wb") as f:
@@ -121,9 +198,9 @@ async def download_version(version_str: str) -> None:
         raise RuntimeError(f"Network error while downloading Minecraft {version_str}: {e}") from e
 
 
-async def ensure_version(version_str: str) -> None:
-    if not version_jar_path(version_str).exists():
-        await download_version(version_str)
+async def ensure_version(version: int) -> None:
+    if not version_jar_path(version).exists():
+        await download_version(version)
 
 
 async def fetch_available_versions(include_snapshots: bool = False) -> list[str]:

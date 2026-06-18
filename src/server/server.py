@@ -5,38 +5,50 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 
-import attr
 import psutil
 
-from .java import ensure_java
-from .java import required_java_version
-from .sessions import write_session_log
-from .worlds import read_jar_data_version
+from server.datatypes import ServerPerfStats
+from server.datatypes import StartRequest
+from server.java import ensure_java
+from server.java import required_java_version
+from server.sessions import allocate_session_id
+from server.sessions import write_session_log
+from server.worlds import ensure_version
+from server.worlds import get_version
+from server.worlds import get_world_port
+from server.worlds import version_jar_path
+
+
+def _write_server_port(world_dir: Path, port: int) -> None:
+    props = world_dir / "server.properties"
+    if props.exists():
+        lines = props.read_text().splitlines()
+        new_lines: list[str] = []
+        updated = False
+        for line in lines:
+            if line.startswith("server-port="):
+                new_lines.append(f"server-port={port}")
+                updated = True
+            else:
+                new_lines.append(line)
+        if not updated:
+            new_lines.append(f"server-port={port}")
+        props.write_text("\n".join(new_lines) + "\n")
+    else:
+        props.write_text(f"server-port={port}\n")
 
 
 def _data_dir() -> Path:
     return Path(os.environ["OPENHOST_APP_DATA_DIR"])
 
 
-@attr.s(auto_attribs=True, frozen=True)
-class ServerInfo:
-    version: str
-    world: str
-    memory_mb: int
-
-
-@attr.s(auto_attribs=True, frozen=True)
-class PerfStats:
-    pid: int
-    cpu_percent: float
-    memory_mb: float
-    uptime_seconds: float
-
-
 class MinecraftServer:
-    def __init__(self, server_info: ServerInfo, session_id: int) -> None:
-        self._info = server_info
-        self._session_id = session_id
+    def __init__(self, start_req: StartRequest) -> None:
+        self._world: str = start_req.world
+        self._memory_mb: int = start_req.memory_mb
+        self._session_id: int = allocate_session_id()
+        self._version = get_version(start_req.world)
+        self._port: int = get_world_port(start_req.world)
         self._process: asyncio.subprocess.Process | None = None
         self._psutil_proc: psutil.Process | None = None
         self._start_time: float | None = None
@@ -46,19 +58,18 @@ class MinecraftServer:
         self._reader_task: asyncio.Task[None] | None = None
 
     async def run(self) -> None:
-        world_dir = (_data_dir() / "worlds" / self._info.world).resolve()
-        jars = list(world_dir.glob("*.jar"))
-        if not jars:
-            raise RuntimeError(f"No server JAR found in world '{self._info.world}'")
-        jar = jars[0]
+        world_dir = (_data_dir() / "worlds" / self._world).resolve()
 
-        dv = read_jar_data_version(jar)
-        java_bin = await ensure_java(required_java_version(dv))
+        await ensure_version(self._version)
+        jar = version_jar_path(self._version).resolve()
+        java_bin = await ensure_java(required_java_version(self._version))
+
+        _write_server_port(world_dir, self._port)
 
         self._process = await asyncio.create_subprocess_exec(
             str(java_bin),
-            f"-Xmx{self._info.memory_mb}M",
-            f"-Xms{self._info.memory_mb}M",
+            f"-Xmx{self._memory_mb}M",
+            f"-Xms{self._memory_mb}M",
             "-jar",
             str(jar),
             "--nogui",
@@ -119,7 +130,7 @@ class MinecraftServer:
         if self._started_at is None:
             return
         write_session_log(
-            world=self._info.world,
+            world=self._world,
             session_id=self._session_id,
             lines=list(self._output),
             started_at=self._started_at,
@@ -137,12 +148,12 @@ class MinecraftServer:
             raise RuntimeError(f"Failed to send command: {e}") from e
         self._output.append(f"> {command}")
 
-    def get_perf_stats(self) -> PerfStats | None:
+    def get_perf_stats(self) -> ServerPerfStats | None:
         if self._process is None or self._process.returncode is not None:
             return None
         try:
             proc = self._psutil_proc or psutil.Process(self._process.pid)
-            return PerfStats(
+            return ServerPerfStats(
                 pid=self._process.pid,
                 cpu_percent=proc.cpu_percent(),
                 memory_mb=proc.memory_info().rss / (1024 * 1024),
@@ -160,11 +171,20 @@ class MinecraftServer:
     def set_status(self, status: str) -> None:
         self._status = status
 
-    def get_stats(self) -> ServerInfo:
-        return self._info
+    def get_world(self) -> str:
+        return self._world
+
+    def get_version(self) -> int:
+        return self._version
+
+    def get_memory_mb(self) -> int:
+        return self._memory_mb
 
     def get_session_id(self) -> int:
         return self._session_id
+
+    def get_port(self) -> int:
+        return self._port
 
     def get_output(self) -> list[str]:
         return list(self._output)

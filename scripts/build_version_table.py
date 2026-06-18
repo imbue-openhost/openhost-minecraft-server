@@ -1,9 +1,3 @@
-#!/usr/bin/env python3
-"""Fetch the Minecraft data version table from the wiki and write src/server/version_data.py.
-
-Run via:  just gen-version-table
-"""
-
 import asyncio
 from html.parser import HTMLParser
 from pathlib import Path
@@ -26,6 +20,9 @@ _JAVA_VERSION_TABLE: list[tuple[int, int]] = [
 ]
 
 
+# Grabs a version table from the Minecraft wiki to build a table of version str to int.
+# e.g. "26.1 snapshot 1" -> 4764
+# used for reading versions from JARs and for processing different versions
 class _VersionTableParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()

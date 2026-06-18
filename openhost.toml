@@ -1,7 +1,7 @@
 [app]
 name = "openhost-minecraft-servers"
-version = "0.1.0"
-description = "TODO: one-line description of your app"
+version = "1.0.0"
+description = "A self-hosted minecraft server runner"
 
 [runtime.container]
 image = "Dockerfile"
@@ -14,13 +14,36 @@ health_check = "/health"
 # public_paths = ["/"]
 
 [resources]
-memory_mb = 256
-cpu_millicores = 200
+memory_mb = 16384
+cpu_millicores = 10000
+
+[[ports]]
+label = "mc-0"
+container_port = 25565
+host_port = 25565
+
+[[ports]]
+label = "mc-1"
+container_port = 25566
+host_port = 25566
+
+[[ports]]
+label = "mc-2"
+container_port = 25567
+host_port = 25567
+
+[[ports]]
+label = "mc-3"
+container_port = 25568
+host_port = 25568
+
+[[ports]]
+label = "mc-4"
+container_port = 25569
+host_port = 25569
 
 [data]
-# Named sqlite databases provisioned + persisted by OpenHost.
-# sqlite = ["main"]
-# Persistent scratch directory for arbitrary app data (uploads, caches, etc).
-app_data = true
+# World metadata (port + data version per world). Implicitly enables app_data.
+sqlite = ["default"]
 # Non-backed-up scratch space for recreatable downloads: server JARs, Java JREs.
 app_temp_data = true

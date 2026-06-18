@@ -6,74 +6,44 @@ from litestar import MediaType
 from litestar import get
 from litestar import post
 from litestar.exceptions import HTTPException
+from litestar.response import Response
 from litestar.status_codes import HTTP_201_CREATED
+from litestar.status_codes import HTTP_204_NO_CONTENT
 from litestar.status_codes import HTTP_400_BAD_REQUEST
 from litestar.status_codes import HTTP_404_NOT_FOUND
 from litestar.status_codes import HTTP_409_CONFLICT
 from litestar.status_codes import HTTP_500_INTERNAL_SERVER_ERROR
 
-from .java import ensure_java
-from .java import is_java_downloaded
-from .java import list_downloaded_java_versions
-from .java import required_java_version
-from .server import MinecraftServer
-from .server import PerfStats
-from .server import ServerInfo
-from .sessions import SessionEntry  # noqa: F401 — re-exported for Litestar schema
-from .sessions import WorldSessions
-from .sessions import allocate_session_id
-from .sessions import list_all_sessions
-from .sessions import read_session_log
-from .state import AppState
-from .worlds import create_world
-from .worlds import ensure_version
-from .worlds import fetch_available_versions
-from .worlds import get_data_version
-from .worlds import get_version_string
-from .worlds import get_world
-from .worlds import list_downloaded_versions
-from .worlds import read_jar_data_version
-from .worlds import version_jar_path
+from server.datatypes import CommandRequest
+from server.datatypes import JavaRequirement
+from server.datatypes import ServerPerfStats
+from server.datatypes import ServerState
+from server.datatypes import StartRequest
+from server.datatypes import WorldInfo
+from server.java import ensure_java
+from server.java import is_java_downloaded
+from server.java import list_downloaded_java_versions
+from server.java import required_java_version
+from server.server import MinecraftServer
+from server.sessions import SessionEntry  # noqa: F401 — re-exported for Litestar schema
+from server.sessions import WorldSessions
+from server.sessions import list_all_sessions
+from server.sessions import read_session_log
+from server.state import AppState
+from server.version_data import VERSION_MAP
+from server.worlds import MINECRAFT_PORTS
+from server.worlds import assign_world_port
+from server.worlds import create_world
+from server.worlds import ensure_version
+from server.worlds import fetch_available_versions
+from server.worlds import get_data_version
+from server.worlds import get_world
+from server.worlds import list_downloaded_versions
+from server.worlds import read_jar_data_version
+from server.worlds import version_jar_path
 
-
-@attr.s(auto_attribs=True, frozen=True)
-class WorldState:
-    name: str
-    version: str
-
-
-@attr.s(auto_attribs=True, frozen=True)
-class JavaRequirement:
-    java_version: int
-    downloaded: bool
-
-
-@attr.s(auto_attribs=True, frozen=True)
-class ServerState:
-    session_id: int
-    version: str
-    world: str
-    memory_mb: int
-    running: bool
-    status: str  # "running" | "stopping" | "saving" | "saved"
-
-
-@attr.s(auto_attribs=True, frozen=True)
-class CreateWorldRequest:
-    name: str
-    version: str
-
-
-@attr.s(auto_attribs=True, frozen=True)
-class StartRequest:
-    world: str
-    memory_mb: int
-
-
-@attr.s(auto_attribs=True, frozen=True)
-class CommandRequest:
-    session_id: int
-    command: str
+_static_index_path: Path = Path(__file__).parent / "static" / "index.html"
+_static_app_js_path: Path = Path(__file__).parent / "static" / "app.js"
 
 
 async def _stop_lifecycle(app_state: AppState, server: MinecraftServer) -> None:
@@ -90,7 +60,17 @@ async def _stop_lifecycle(app_state: AppState, server: MinecraftServer) -> None:
 
 @get("/", media_type=MediaType.HTML, sync_to_thread=False)
 def index() -> str:
-    return (Path(__file__).parent / "static" / "index.html").read_text()
+    return _static_index_path.read_text()
+
+
+@get("/app.js", media_type="application/javascript", sync_to_thread=False)
+def app_js() -> str:
+    return _static_app_js_path.read_text()
+
+
+@get("/api/versions/map", sync_to_thread=False)
+def api_versions_map() -> dict[str, int]:
+    return {v: k for k, v in VERSION_MAP.items()}
 
 
 @get("/api/versions")
@@ -107,15 +87,8 @@ def api_downloaded_versions() -> list[str]:
 
 
 @get("/api/worlds", sync_to_thread=False)
-def api_worlds(app_state: AppState) -> list[WorldState]:
-    result = []
-    for w in app_state.worlds:
-        try:
-            version_str = get_version_string(w.version)
-        except KeyError:
-            version_str = str(w.version)
-        result.append(WorldState(name=w.world, version=version_str))
-    return result
+def api_worlds(app_state: AppState) -> list[WorldInfo]:
+    return app_state.worlds
 
 
 @get("/api/java/downloaded", sync_to_thread=False)
@@ -139,18 +112,31 @@ def api_java_required(mc_version: str) -> JavaRequirement:
 
 
 @post("/api/worlds", status_code=HTTP_201_CREATED)
-async def api_create_world(data: CreateWorldRequest, app_state: AppState) -> None:
+async def api_create_world(data: WorldInfo, app_state: AppState) -> None:
     try:
         await ensure_version(data.version)
         dv = read_jar_data_version(version_jar_path(data.version))
         await ensure_java(required_java_version(dv))
     except (RuntimeError, ValueError) as e:
         raise HTTPException(status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)) from e
-    create_world(data.name, data.version)
+    used_ports = {w.port for w in app_state.worlds}
+    if data.port != 0:
+        if data.port not in MINECRAFT_PORTS or data.port in used_ports:
+            raise HTTPException(
+                status_code=HTTP_400_BAD_REQUEST,
+                detail=f"Port {data.port} is not available",
+            )
+        port = data.port
+    else:
+        try:
+            port = assign_world_port(used_ports)
+        except RuntimeError as e:
+            raise HTTPException(status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)) from e
+    create_world(attr.evolve(data, port=port))
     world = get_world(data.name)
     if world is not None:
         app_state.worlds.append(world)
-        app_state.worlds.sort(key=lambda w: w.world)
+        app_state.worlds.sort(key=lambda w: w.name)
 
 
 @get("/api/servers", sync_to_thread=False)
@@ -158,9 +144,10 @@ def api_servers(app_state: AppState) -> list[ServerState]:
     return [
         ServerState(
             session_id=s.get_session_id(),
-            version=s.get_stats().version,
-            world=s.get_stats().world,
-            memory_mb=s.get_stats().memory_mb,
+            version=s.get_version(),
+            world=s.get_world(),
+            port=s.get_port(),
+            memory_mb=s.get_memory_mb(),
             running=s.is_running(),
             status=s.get_status(),
         )
@@ -178,19 +165,19 @@ def api_status(app_state: AppState, session_id: int) -> bool:
 
 @post("/api/server/start")
 async def api_start(data: StartRequest, app_state: AppState) -> bool:
-    if any(s.is_running() and s.get_stats().world == data.world for s in app_state.servers):
+    if any(s.is_running() and s.get_world() == data.world for s in app_state.servers):
         raise HTTPException(status_code=HTTP_409_CONFLICT, detail=f"World '{data.world}' is already running")
     world = get_world(data.world)
     if world is None:
         raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail=f"World '{data.world}' not found")
+
     try:
-        version_str = get_version_string(world.version)
-    except KeyError:
+        new_server = MinecraftServer(data)
+    except Exception as e:
         raise HTTPException(
-            status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Unknown data version {world.version}"
-        ) from None
-    server_info = ServerInfo(version=version_str, world=data.world, memory_mb=data.memory_mb)
-    new_server = MinecraftServer(server_info, allocate_session_id())
+            status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=f"server startup failed for '{data.world} failed"
+        ) from e
+
     app_state.servers.append(new_server)
     try:
         await new_server.run()
@@ -209,12 +196,12 @@ def api_server_logs(app_state: AppState, session_id: int) -> list[str]:
 
 
 @get("/api/server/stats", sync_to_thread=False)
-def api_server_stats(app_state: AppState, session_id: int) -> PerfStats:
+def api_server_stats(app_state: AppState, session_id: int) -> ServerPerfStats | Response[None]:
     for s in app_state.servers:
         if s.get_session_id() == session_id:
             stats = s.get_perf_stats()
             if stats is None:
-                raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail=f"Session {session_id} is not running")
+                return Response(content=None, status_code=HTTP_204_NO_CONTENT)
             return stats
     raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail=f"No server with session id {session_id}")
 
