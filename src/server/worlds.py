@@ -1,8 +1,10 @@
+import contextlib
 import hashlib
 import json
 import os
-import shutil
+import sqlite3
 import zipfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import httpx
@@ -22,37 +24,55 @@ def _temp_dir() -> Path:
     return Path(os.environ["OPENHOST_APP_TEMP_DIR"])
 
 
-def _read_ports() -> dict[str, int]:
-    path = _data_dir() / "ports.txt"
-    if not path.exists():
-        return {}
-    result: dict[str, int] = {}
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        name, _, port_str = line.partition("=")
-        result[name] = int(port_str)
-    return result
-
-
-def _write_ports(ports: dict[str, int]) -> None:
-    path = _data_dir() / "ports.txt"
+@contextlib.contextmanager
+def _db() -> Iterator[sqlite3.Connection]:
+    path = Path(os.environ["OPENHOST_SQLITE_WORLDS"])
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("".join(f"{name}={port}\n" for name, port in sorted(ports.items())))
+    conn = sqlite3.connect(str(path))
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS worlds (
+            name    TEXT PRIMARY KEY,
+            port    INTEGER NOT NULL,
+            version INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    conn.commit()
+    try:
+        yield conn
+    except Exception:
+        conn.rollback()
+        raise
+    else:
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def get_world_port(name: str) -> int:
-    ports = _read_ports()
-    if name not in ports:
+    with _db() as conn:
+        row = conn.execute("SELECT port FROM worlds WHERE name = ?", (name,)).fetchone()
+    if row is None:
         raise KeyError(f"No port assigned for world {name!r}")
-    return ports[name]
+    return int(row[0])
 
 
 def save_world_port(name: str, port: int) -> None:
-    ports = _read_ports()
-    ports[name] = port
-    _write_ports(ports)
+    with _db() as conn:
+        conn.execute(
+            "INSERT INTO worlds (name, port, version) VALUES (?, ?, 0) "
+            "ON CONFLICT(name) DO UPDATE SET port = excluded.port",
+            (name, port),
+        )
+
+
+def save_world_info(name: str, port: int, version: int) -> None:
+    with _db() as conn:
+        conn.execute(
+            "INSERT INTO worlds (name, port, version) VALUES (?, ?, ?) "
+            "ON CONFLICT(name) DO UPDATE SET port = excluded.port, version = excluded.version",
+            (name, port, version),
+        )
 
 
 def assign_world_port(used_ports: set[int]) -> int:
@@ -84,19 +104,32 @@ def read_jar_data_version(jar_path: Path) -> int:
 
 
 def get_version(name: str) -> int:
+    with _db() as conn:
+        row = conn.execute("SELECT version FROM worlds WHERE name = ?", (name,)).fetchone()
+    if row is not None and int(row[0]) != 0:
+        return int(row[0])
+    # Fallback: read from a JAR left in the world dir (pre-migration worlds).
     d = _data_dir() / "worlds" / name
     jars = list(d.glob("*.jar"))
     if not jars:
-        raise LookupError(f"World with name {name} does not exist")
+        raise LookupError(f"No version recorded and no JAR found for world {name!r}")
     return read_jar_data_version(jars[0])
 
 
 def get_world(name: str) -> WorldInfo | None:
-    try:
-        version = get_version(name)
-    except LookupError:
+    if not (_data_dir() / "worlds" / name).is_dir():
         return None
-    return WorldInfo(version=version, name=name, port=get_world_port(name))
+    with _db() as conn:
+        row = conn.execute("SELECT port, version FROM worlds WHERE name = ?", (name,)).fetchone()
+    if row is None:
+        return None
+    port, version = int(row[0]), int(row[1])
+    if version == 0:
+        try:
+            version = get_version(name)
+        except LookupError:
+            return None
+    return WorldInfo(version=version, name=name, port=port)
 
 
 def load_worlds() -> list[WorldInfo]:
@@ -115,9 +148,8 @@ def load_worlds() -> list[WorldInfo]:
 def create_world(info: WorldInfo) -> None:
     d = _data_dir() / "worlds" / info.name
     d.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(version_jar_path(info.version), d / f"{get_version_string(info.version)}.jar")
     (d / "eula.txt").write_text("eula=true\n")
-    save_world_port(info.name, info.port)
+    save_world_info(info.name, info.port, info.version)
 
 
 def version_jar_path(version: int) -> Path:

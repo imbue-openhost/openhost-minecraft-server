@@ -13,9 +13,10 @@ from server.java import ensure_java
 from server.java import required_java_version
 from server.sessions import allocate_session_id
 from server.sessions import write_session_log
+from server.worlds import ensure_version
 from server.worlds import get_version
 from server.worlds import get_world_port
-from server.worlds import read_jar_data_version
+from server.worlds import version_jar_path
 
 
 def _write_server_port(world_dir: Path, port: int) -> None:
@@ -58,13 +59,10 @@ class MinecraftServer:
 
     async def run(self) -> None:
         world_dir = (_data_dir() / "worlds" / self._world).resolve()
-        jars = list(world_dir.glob("*.jar"))
-        if not jars:
-            raise RuntimeError(f"No server JAR found in world '{self._world}'")
-        jar = jars[0]
 
-        dv = read_jar_data_version(jar)
-        java_bin = await ensure_java(required_java_version(dv))
+        await ensure_version(self._version)
+        jar = version_jar_path(self._version).resolve()
+        java_bin = await ensure_java(required_java_version(self._version))
 
         _write_server_port(world_dir, self._port)
 

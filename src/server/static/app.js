@@ -50,6 +50,11 @@ function formatSessionDate(s) {
     return d.toLocaleString(undefined, {month:'short', day:'numeric', year:'numeric', hour:'2-digit', minute:'2-digit'});
 }
 
+function joinAddress(port) {
+    const host = window.location.hostname;
+    return port === 25565 ? host : `${host}:${port}`;
+}
+
 // ── Version / world loaders ────────────────────────────────────────
 
 async function loadVersionMap() {
@@ -265,6 +270,7 @@ function renderServerCard(s) {
             <div class="server-meta">
                 <div class="server-title">${escapeHtml(versionStr)} &middot; ${escapeHtml(s.world)}</div>
                 <div class="server-detail">${s.memory_mb} MB &nbsp;&middot;&nbsp; port ${s.port} &nbsp;&middot;&nbsp; Session #${s.session_id}</div>
+                <div class="server-join">join at: ${escapeHtml(joinAddress(s.port))}</div>
             </div>
             <div style="display:flex;align-items:center;gap:8px">
                 <span class="badge running">Running</span>
