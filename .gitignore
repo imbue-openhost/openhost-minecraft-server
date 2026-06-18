@@ -13,6 +13,8 @@ env/
 .env
 app_data/
 app_temp_data/
+app_data_linux/
+app_temp_data_linux/
 
 # uv — uv.lock IS committed; the resolved python version pin is not
 .python-version

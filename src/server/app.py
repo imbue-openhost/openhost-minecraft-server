@@ -8,6 +8,7 @@ from litestar import get
 from litestar.datastructures import State
 from litestar.di import Provide
 from litestar.enums import ScopeType
+from litestar.exceptions import HTTPException
 from litestar.response import Response
 from litestar.status_codes import HTTP_500_INTERNAL_SERVER_ERROR
 from litestar.types import ASGIApp
@@ -90,6 +91,8 @@ class _AccessLog:
 
 
 def _unhandled_exception_handler(request: Request[Any, Any, Any], exc: Exception) -> Response[dict[str, str]]:
+    if isinstance(exc, HTTPException):
+        return Response({"detail": exc.detail}, status_code=exc.status_code)
     logger.exception("Unhandled exception on {} {}", request.method, request.url)
     detail = str(exc) or type(exc).__name__
     return Response({"detail": detail}, status_code=HTTP_500_INTERNAL_SERVER_ERROR)

@@ -2,6 +2,7 @@ let downloadedVersions = new Set();
 let usedPorts = new Set();
 let detailSessionId = null;
 let detailPollTimer = null;
+let detailLineCount = 0;
 let versionMap = {};        // MC version string → data version int
 let reverseVersionMap = {}; // data version int → MC version string
 
@@ -322,6 +323,7 @@ async function refreshServers() {
 
 function openDetail(sessionId, version, world, port) {
     detailSessionId = sessionId;
+    detailLineCount = 0;
     document.getElementById('detail-version').textContent = version;
     document.getElementById('detail-world').textContent = world;
     document.getElementById('detail-port').textContent = `${port}`;
@@ -359,19 +361,31 @@ async function pollDetailLogs() {
     if (detailSessionId === null || !r.ok) return;
     const lines = await r.json();
     const terminal = document.getElementById('terminal');
+
+    if (lines.length < detailLineCount) {
+        // Server-side deque wrapped — clear and re-render from scratch.
+        terminal.textContent = lines.join('\n');
+        detailLineCount = lines.length;
+        terminal.scrollTop = terminal.scrollHeight;
+        return;
+    }
+    if (lines.length === detailLineCount) return;
+
     const atBottom = terminal.scrollTop + terminal.clientHeight >= terminal.scrollHeight - 4;
-    terminal.textContent = lines.join('\n');
+    const newText = (detailLineCount > 0 ? '\n' : '') + lines.slice(detailLineCount).join('\n');
+    terminal.appendChild(document.createTextNode(newText));
+    detailLineCount = lines.length;
     if (atBottom) terminal.scrollTop = terminal.scrollHeight;
 }
 
 async function pollDetailStats() {
     if (detailSessionId === null) return;
     const r = await fetch(`/api/server/stats?session_id=${detailSessionId}`);
-    if (!r.ok || r.status === 204) {
-        // Process has exited (204) or session gone (4xx) — return to main screen.
+    if (r.status === 404) {
         closeDetail();
         return;
     }
+    if (!r.ok || r.status === 204) return; // server still present but no psutil data yet
     const s = await r.json();
     document.getElementById('stat-cpu').textContent = `${s.cpu_percent.toFixed(1)}%`;
     document.getElementById('stat-ram').textContent = `${s.memory_mb.toFixed(0)} MB`;
