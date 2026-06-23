@@ -48,8 +48,6 @@ _static_app_js_path: Path = Path(__file__).parent / "static" / "app.js"
 
 async def _stop_lifecycle(app_state: AppState, server: MinecraftServer) -> None:
     await server.wait_for_exit()
-    server.set_status("saving")
-    await asyncio.to_thread(server.save_session)
     server.set_status("saved")
     await asyncio.sleep(4)
     try:

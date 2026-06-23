@@ -4,6 +4,7 @@ import time
 from collections import deque
 from datetime import datetime
 from pathlib import Path
+from typing import TextIO
 
 import psutil
 
@@ -12,7 +13,7 @@ from server.datatypes import StartRequest
 from server.java import ensure_java
 from server.java import required_java_version
 from server.sessions import allocate_session_id
-from server.sessions import write_session_log
+from server.sessions import session_log_path
 from server.worlds import ensure_version
 from server.worlds import get_version
 from server.worlds import get_world_port
@@ -55,6 +56,7 @@ class MinecraftServer:
         self._started_at: datetime | None = None
         self._status: str = "running"
         self._output: deque[str] = deque(maxlen=1000)
+        self._log_file: TextIO | None = None
         self._reader_task: asyncio.Task[None] | None = None
 
     async def run(self) -> None:
@@ -83,13 +85,21 @@ class MinecraftServer:
         self._status = "running"
         self._psutil_proc = psutil.Process(self._process.pid)
         self._psutil_proc.cpu_percent()  # initialise CPU baseline
+        self._log_file = session_log_path(self._world, self._session_id, self._started_at).open("w", encoding="utf-8")
         self._reader_task = asyncio.create_task(self._read_output())
 
     async def _read_output(self) -> None:
         assert self._process is not None and self._process.stdout is not None
         async for line in self._process.stdout:
-            self._output.append(line.decode(errors="replace").rstrip())
+            decoded = line.decode(errors="replace").rstrip()
+            self._output.append(decoded)
+            if self._log_file is not None:
+                self._log_file.write(decoded + "\n")
+                self._log_file.flush()
         await self._process.wait()
+        if self._log_file is not None:
+            self._log_file.close()
+            self._log_file = None
 
     async def request_stop(self) -> None:
         """Send the stop command without waiting for the process to exit."""
@@ -119,22 +129,14 @@ class MinecraftServer:
                 await self._reader_task
             except asyncio.CancelledError:
                 pass
+        if self._log_file is not None:
+            self._log_file.close()
+            self._log_file = None
 
     async def stop(self) -> None:
         """Full blocking stop used during app shutdown — does not write a session log."""
         await self.request_stop()
         await self.wait_for_exit()
-
-    def save_session(self) -> None:
-        """Write buffered output to the session log directory."""
-        if self._started_at is None:
-            return
-        write_session_log(
-            world=self._world,
-            session_id=self._session_id,
-            lines=list(self._output),
-            started_at=self._started_at,
-        )
 
     async def send_command(self, command: str) -> None:
         if self._process is None or self._process.returncode is not None:

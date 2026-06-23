@@ -28,11 +28,11 @@ def _log_dir(world: str) -> Path:
     return _data_dir() / "logs" / world
 
 
-def write_session_log(world: str, session_id: int, lines: list[str], started_at: datetime) -> None:
+def session_log_path(world: str, session_id: int, started_at: datetime) -> Path:
     d = _log_dir(world)
     d.mkdir(parents=True, exist_ok=True)
     ts = started_at.strftime("%Y-%m-%dT%H-%M-%S")
-    (d / f"{session_id:06d}-{ts}.log").write_text("\n".join(lines))
+    return d / f"{session_id:06d}-{ts}.log"
 
 
 @attr.s(auto_attribs=True, frozen=True)
