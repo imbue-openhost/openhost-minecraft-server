@@ -1,4 +1,6 @@
 import asyncio
+import json
+from collections.abc import AsyncGenerator
 from pathlib import Path
 
 import attr
@@ -7,6 +9,8 @@ from litestar import get
 from litestar import post
 from litestar.exceptions import HTTPException
 from litestar.response import Response
+from litestar.response import ServerSentEvent
+from litestar.response.sse import ServerSentEventMessage
 from litestar.status_codes import HTTP_201_CREATED
 from litestar.status_codes import HTTP_204_NO_CONTENT
 from litestar.status_codes import HTTP_400_BAD_REQUEST
@@ -46,14 +50,38 @@ _static_index_path: Path = Path(__file__).parent / "static" / "index.html"
 _static_app_js_path: Path = Path(__file__).parent / "static" / "app.js"
 
 
+def _servers_sse_message(app_state: AppState) -> ServerSentEventMessage:
+    servers = [
+        ServerState(
+            session_id=s.get_session_id(),
+            version=s.get_version(),
+            world=s.get_world(),
+            port=s.get_port(),
+            memory_mb=s.get_memory_mb(),
+            running=s.is_running(),
+            status=s.get_status(),
+        )
+        for s in app_state.servers
+    ]
+    return ServerSentEventMessage(data=json.dumps([attr.asdict(s) for s in servers]))
+
+
 async def _stop_lifecycle(app_state: AppState, server: MinecraftServer) -> None:
     await server.wait_for_exit()
     server.set_status("saved")
+    app_state.notify_servers_changed()
     await asyncio.sleep(4)
     try:
         app_state.servers.remove(server)
     except ValueError:
         pass
+    app_state.notify_servers_changed()
+
+
+async def _crash_lifecycle(app_state: AppState, server: MinecraftServer) -> None:
+    await server.wait_for_process_exit()
+    if server.get_status() == "crashed":
+        app_state.notify_servers_changed()
 
 
 @get("/", media_type=MediaType.HTML, sync_to_thread=False)
@@ -182,6 +210,8 @@ async def api_start(data: StartRequest, app_state: AppState) -> bool:
     except Exception as e:
         app_state.servers.remove(new_server)
         raise HTTPException(status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)) from e
+    app_state.notify_servers_changed()
+    asyncio.create_task(_crash_lifecycle(app_state, new_server))
     return new_server.is_running()
 
 
@@ -189,7 +219,10 @@ async def api_start(data: StartRequest, app_state: AppState) -> bool:
 def api_server_logs(app_state: AppState, session_id: int) -> list[str]:
     for s in app_state.servers:
         if s.get_session_id() == session_id:
-            return s.get_output()
+            try:
+                return read_session_log(s.get_world(), session_id)
+            except (FileNotFoundError, ValueError):
+                return s.get_output()
     raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail=f"No server with session id {session_id}")
 
 
@@ -221,9 +254,44 @@ async def api_stop(app_state: AppState, session_id: int) -> None:
     for s in app_state.servers:
         if s.get_session_id() == session_id:
             await s.request_stop()
+            app_state.notify_servers_changed()
             asyncio.create_task(_stop_lifecycle(app_state, s))
             return
     raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail=f"No server with session id {session_id}")
+
+
+@post("/api/server/dismiss")
+async def api_dismiss(app_state: AppState, session_id: int) -> None:
+    for s in app_state.servers:
+        if s.get_session_id() == session_id:
+            if s.get_status() != "crashed":
+                raise HTTPException(status_code=HTTP_409_CONFLICT, detail=f"Server {session_id} is not crashed")
+            app_state.servers.remove(s)
+            app_state.notify_servers_changed()
+            return
+    raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail=f"No server with session id {session_id}")
+
+
+@get("/api/servers/events")
+async def api_server_events(app_state: AppState) -> ServerSentEvent:
+    async def gen() -> AsyncGenerator[ServerSentEventMessage, None]:
+        queue: asyncio.Queue[None] = asyncio.Queue(maxsize=1)
+        app_state._sse_queues.append(queue)
+        try:
+            yield _servers_sse_message(app_state)
+            while True:
+                try:
+                    await asyncio.wait_for(queue.get(), timeout=25)
+                    yield _servers_sse_message(app_state)
+                except TimeoutError:
+                    yield ServerSentEventMessage(comment="keepalive")
+        finally:
+            try:
+                app_state._sse_queues.remove(queue)
+            except ValueError:
+                pass
+
+    return ServerSentEvent(content=gen())
 
 
 @get("/api/sessions", sync_to_thread=False)

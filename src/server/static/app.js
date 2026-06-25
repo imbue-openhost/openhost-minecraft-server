@@ -5,6 +5,7 @@ let detailPollTimer = null;
 let detailLineCount = 0;
 let versionMap = {};        // MC version string → data version int
 let reverseVersionMap = {}; // data version int → MC version string
+let lastServersJson = null;
 
 const MINECRAFT_PORTS = [25565, 25566, 25567, 25568, 25569];
 
@@ -262,6 +263,30 @@ async function createWorld() {
 
 // ── Server list ────────────────────────────────────────────────────
 
+function _fallbackCopy(text) {
+    const el = document.createElement('textarea');
+    el.value = text;
+    el.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none';
+    document.body.appendChild(el);
+    el.select();
+    try { document.execCommand('copy'); } catch {}
+    document.body.removeChild(el);
+}
+
+function copyAddress(btn, port) {
+    const text = joinAddress(port);
+    const done = () => {
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+    };
+    if (navigator.clipboard) {
+        navigator.clipboard.writeText(text).then(done).catch(() => { _fallbackCopy(text); done(); });
+    } else {
+        _fallbackCopy(text);
+        done();
+    }
+}
+
 function renderServerCard(s) {
     const versionStr = reverseVersionMap[s.version] || String(s.version);
     if (s.status === 'running') {
@@ -270,12 +295,29 @@ function renderServerCard(s) {
             <div class="server-meta">
                 <div class="server-title">${escapeHtml(versionStr)} &middot; ${escapeHtml(s.world)}</div>
                 <div class="server-detail">${s.memory_mb} MB &nbsp;&middot;&nbsp; port ${s.port} &nbsp;&middot;&nbsp; Session #${s.session_id}</div>
-                <div class="server-join">join at: ${escapeHtml(joinAddress(s.port))}</div>
+                <div style="display:flex;align-items:center;gap:6px">
+                    <span class="server-join">join at: ${escapeHtml(joinAddress(s.port))}</span>
+                    <button onclick="copyAddress(this, ${s.port})" style="padding:2px 7px;font-size:0.75rem">Copy</button>
+                </div>
             </div>
             <div style="display:flex;align-items:center;gap:8px">
                 <span class="badge running">Running</span>
                 <button onclick="openDetail(${s.session_id}, ${jsAttr(versionStr)}, ${jsAttr(s.world)}, ${s.port})">View</button>
                 <button class="btn-stop" onclick="stopServer(${s.session_id})">Stop</button>
+            </div>
+        </div>`;
+    }
+    if (s.status === 'crashed') {
+        return `
+        <div class="server-card crashed">
+            <div class="server-meta">
+                <div class="server-title">${escapeHtml(versionStr)} &middot; ${escapeHtml(s.world)}</div>
+                <div class="server-detail">${s.memory_mb} MB &nbsp;&middot;&nbsp; port ${s.port} &nbsp;&middot;&nbsp; Session #${s.session_id}</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px">
+                <span class="badge crashed">Crashed</span>
+                <button onclick="openDetail(${s.session_id}, ${jsAttr(versionStr)}, ${jsAttr(s.world)}, ${s.port}, 'crashed')">View</button>
+                <button onclick="dismissServer(${s.session_id})">Dismiss</button>
             </div>
         </div>`;
     }
@@ -308,15 +350,25 @@ async function startServer() {
     await refreshServers();
 }
 
+async function dismissServer(sessionId) {
+    clearError();
+    const r = await fetch(`/api/server/dismiss?session_id=${sessionId}`, {method: 'POST'});
+    if (!r.ok) showError(await apiErrorDetail(r));
+    // SSE delivers the removal.
+}
+
 async function stopServer(sessionId) {
     clearError();
     const r = await fetch(`/api/server/stop?session_id=${sessionId}`, {method: 'POST'});
     if (!r.ok) showError(await apiErrorDetail(r));
-    // Status transitions are driven by polling — no forced refresh needed.
+    // SSE delivers status transitions automatically.
 }
 
 async function refreshServers() {
     const servers = await fetch('/api/servers').then(r => r.json());
+    const json = JSON.stringify(servers);
+    if (json === lastServersJson) return;
+    lastServersJson = json;
     const list = document.getElementById('server-list');
     if (!servers.length) {
         list.innerHTML = '<div class="empty">No servers running.</div>';
@@ -327,22 +379,41 @@ async function refreshServers() {
 
 // ── Live detail view ───────────────────────────────────────────────
 
-function openDetail(sessionId, version, world, port) {
+function _setDetailCrashed() {
+    clearInterval(detailPollTimer);
+    detailPollTimer = null;
+    const badge = document.getElementById('detail-badge');
+    badge.textContent = 'Crashed';
+    badge.className = 'badge crashed';
+    document.getElementById('detail-stop-btn').style.display = 'none';
+    document.getElementById('cmd-input').disabled = true;
+    document.getElementById('cmd-send-btn').disabled = true;
+    pollDetailLogs(); // one final fetch to pick up the crash message
+}
+
+function openDetail(sessionId, version, world, port, status = 'running') {
     detailSessionId = sessionId;
     detailLineCount = 0;
     document.getElementById('detail-version').textContent = version;
     document.getElementById('detail-world').textContent = world;
     document.getElementById('detail-port').textContent = `${port}`;
     document.getElementById('terminal').textContent = '';
-    document.getElementById('detail-stop-btn').style.display = '';
-    document.getElementById('cmd-input').disabled = false;
-    document.getElementById('cmd-send-btn').disabled = false;
 
     document.getElementById('main-view').style.display = 'none';
     document.getElementById('detail-view').style.display = '';
 
-    pollDetailOnce();
-    detailPollTimer = setInterval(pollDetailOnce, 1000);
+    if (status === 'crashed') {
+        _setDetailCrashed();
+    } else {
+        const badge = document.getElementById('detail-badge');
+        badge.textContent = 'Running';
+        badge.className = 'badge running';
+        document.getElementById('detail-stop-btn').style.display = '';
+        document.getElementById('cmd-input').disabled = false;
+        document.getElementById('cmd-send-btn').disabled = false;
+        pollDetailOnce();
+        detailPollTimer = setInterval(pollDetailOnce, 1000);
+    }
 }
 
 function closeDetail() {
@@ -433,4 +504,27 @@ loadDownloadedVersions();
 loadDownloadedJavaVersions();
 loadWorlds();
 refreshServers();
-setInterval(refreshServers, 2000);
+
+const _serverEvents = new EventSource('/api/servers/events');
+_serverEvents.onmessage = (e) => {
+    const servers = JSON.parse(e.data);
+    console.log('[SSE] servers update', servers);
+
+    if (detailSessionId !== null) {
+        const current = servers.find(s => s.session_id === detailSessionId);
+        if (current && current.status === 'crashed' && detailPollTimer !== null) {
+            _setDetailCrashed();
+        }
+    }
+
+    const json = JSON.stringify(servers);
+    if (json === lastServersJson) return;
+    lastServersJson = json;
+    const list = document.getElementById('server-list');
+    if (!servers.length) {
+        list.innerHTML = '<div class="empty">No servers running.</div>';
+        return;
+    }
+    list.innerHTML = servers.map(renderServerCard).join('');
+};
+_serverEvents.onerror = (e) => console.warn('[SSE] connection error', e);

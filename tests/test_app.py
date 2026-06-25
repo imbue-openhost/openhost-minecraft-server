@@ -11,12 +11,13 @@ def test_health_endpoint(stack: OpenhostStack) -> None:
 
 
 def test_home_page_renders(stack: OpenhostStack, page: Page) -> None:
+    stack.playwright_login(page)
     page.goto(stack.url)
     expect(page.get_by_role("heading", name="Minecraft Server")).to_be_visible()
 
 
 def test_api_worlds_returns_list(stack: OpenhostStack) -> None:
-    response = httpx.get(f"{stack.url}/api/worlds")
+    response = stack.owner_session.get(f"{stack.url}/api/worlds")
     assert response.status_code == 200
     worlds = response.json()
     assert isinstance(worlds, list)
@@ -24,13 +25,13 @@ def test_api_worlds_returns_list(stack: OpenhostStack) -> None:
 
 
 def test_api_servers_empty_on_startup(stack: OpenhostStack) -> None:
-    response = httpx.get(f"{stack.url}/api/servers")
+    response = stack.owner_session.get(f"{stack.url}/api/servers")
     assert response.status_code == 200
     assert response.json() == []
 
 
 def test_api_versions_returns_list(stack: OpenhostStack) -> None:
-    response = httpx.get(f"{stack.url}/api/versions")
+    response = stack.owner_session.get(f"{stack.url}/api/versions")
     assert response.status_code == 200
     versions = response.json()
     assert isinstance(versions, list)
@@ -39,7 +40,7 @@ def test_api_versions_returns_list(stack: OpenhostStack) -> None:
 
 
 def test_start_nonexistent_world_fails(stack: OpenhostStack) -> None:
-    response = httpx.post(
+    response = stack.owner_session.post(
         f"{stack.url}/api/server/start",
         json={"world": "no-such-world", "memory_mb": 2048},
     )
@@ -47,5 +48,5 @@ def test_start_nonexistent_world_fails(stack: OpenhostStack) -> None:
 
 
 def test_stop_nonexistent_server_fails(stack: OpenhostStack) -> None:
-    response = httpx.post(f"{stack.url}/api/server/stop?id_num=9999")
+    response = stack.owner_session.post(f"{stack.url}/api/server/stop?session_id=9999")
     assert response.status_code >= 400

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TextIO
 
 import psutil
+from loguru import logger
 
 from server.datatypes import ServerPerfStats
 from server.datatypes import StartRequest
@@ -100,6 +101,26 @@ class MinecraftServer:
         if self._log_file is not None:
             self._log_file.close()
             self._log_file = None
+        if self._status == "running":
+            self._status = "crashed"
+            if self._process.stdin is not None and not self._process.stdin.is_closing():
+                self._process.stdin.close()
+                try:
+                    await self._process.stdin.wait_closed()
+                except Exception:
+                    pass
+            logger.error(
+                "Minecraft server for world {!r} exited unexpectedly with code {}",
+                self._world,
+                self._process.returncode,
+            )
+
+    async def wait_for_process_exit(self) -> None:
+        if self._reader_task is not None:
+            try:
+                await self._reader_task
+            except asyncio.CancelledError:
+                pass
 
     async def request_stop(self) -> None:
         """Send the stop command without waiting for the process to exit."""

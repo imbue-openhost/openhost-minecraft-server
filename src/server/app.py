@@ -19,10 +19,12 @@ from litestar.types import Send
 from loguru import logger
 
 from server.routes import api_create_world
+from server.routes import api_dismiss
 from server.routes import api_downloaded_versions
 from server.routes import api_java_downloaded
 from server.routes import api_java_required
 from server.routes import api_server_command
+from server.routes import api_server_events
 from server.routes import api_server_logs
 from server.routes import api_server_stats
 from server.routes import api_servers
@@ -114,6 +116,8 @@ app = Litestar(
         api_server_stats,
         api_server_command,
         api_servers,
+        api_server_events,
+        api_dismiss,
         api_sessions,
         api_session_log,
         api_status,
