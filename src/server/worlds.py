@@ -180,6 +180,8 @@ def create_world(info: WorldInfo) -> None:
     d = _data_dir() / "worlds" / info.name
     d.mkdir(parents=True, exist_ok=True)
     (d / "eula.txt").write_text("eula=true\n")
+    if info.mod_loader != "vanilla":
+        (d / "mods").mkdir(exist_ok=True)
     save_world_info(info.name, info.port, info.version, info.mod_loader, info.mod_loader_version)
 
 
@@ -222,6 +224,8 @@ def import_world_from_zip(
         if not (dest / "level.dat").exists():
             raise ValueError("Zip does not appear to contain a Minecraft world (no level.dat found)")
         (dest / "eula.txt").write_text("eula=true\n")
+        if mod_loader != "vanilla":
+            (dest / "mods").mkdir(exist_ok=True)
         save_world_info(name, port, version, mod_loader, mod_loader_version)
     except Exception:
         shutil.rmtree(dest, ignore_errors=True)

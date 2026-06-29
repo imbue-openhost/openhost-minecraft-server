@@ -662,6 +662,7 @@ async function loadCustomizeWorlds() {
     if (!worlds.length) {
         sel.innerHTML = '<option disabled selected>No worlds yet</option>';
         document.getElementById('file-browser-link').style.display = 'none';
+        document.getElementById('mods-folder-link').style.display = 'none';
         document.getElementById('customize-body').style.display = 'none';
         return;
     }
@@ -685,6 +686,7 @@ async function onCustomizeWorldChange(cachedWorlds) {
     if (!name || sel.options[sel.selectedIndex]?.disabled) {
         document.getElementById('customize-body').style.display = 'none';
         document.getElementById('file-browser-link').style.display = 'none';
+        document.getElementById('mods-folder-link').style.display = 'none';
         return;
     }
     currentCustomizeWorld = name;
@@ -702,6 +704,13 @@ async function onCustomizeWorldChange(cachedWorlds) {
         const loaderStr = world.mod_loader && world.mod_loader !== 'vanilla'
             ? ` (${world.mod_loader} ${world.mod_loader_version})` : '';
         document.getElementById('current-jar-label').textContent = `${v}${loaderStr}`;
+        const modsLink = document.getElementById('mods-folder-link');
+        if (world.mod_loader && world.mod_loader !== 'vanilla') {
+            modsLink.href = `${filestashUrl}mods/`;
+            modsLink.style.display = '';
+        } else {
+            modsLink.style.display = 'none';
+        }
     }
     await loadServerSettings(name);
 }
@@ -808,6 +817,15 @@ async function applyJarChange() {
     indicator.classList.remove('visible');
     applyBtn.disabled = false;
     if (!r.ok) { showError(await apiErrorDetail(r)); return; }
+
+    const modsLink = document.getElementById('mods-folder-link');
+    if (loader !== 'vanilla') {
+        const _parts = window.location.hostname.split('.');
+        modsLink.href = `https://filestash.${_parts.slice(1).join('.')}/files/app_data/${_parts[0]}/worlds/${encodeURIComponent(currentCustomizeWorld)}/mods/`;
+        modsLink.style.display = '';
+    } else {
+        modsLink.style.display = 'none';
+    }
 
     await Promise.all([loadWorlds(), loadDownloadedVersions()]);
     document.getElementById('change-jar-form').classList.remove('open');

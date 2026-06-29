@@ -396,6 +396,7 @@ async def api_update_world_jar(name: str, data: WorldJarUpdate, app_state: AppSt
             await ensure_loader(wdir, mc_version, data.mod_loader, data.mod_loader_version, java_bin)
         except (RuntimeError, ValueError) as e:
             raise HTTPException(status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)) from e
+        (wdir / "mods").mkdir(exist_ok=True)
     save_world_info(name, world.port, data.version, data.mod_loader, data.mod_loader_version)
     for i, w in enumerate(app_state.worlds):
         if w.name == name:
