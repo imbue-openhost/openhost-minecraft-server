@@ -21,8 +21,10 @@ from loguru import logger
 from server.routes import api_create_world
 from server.routes import api_dismiss
 from server.routes import api_downloaded_versions
+from server.routes import api_import_world
 from server.routes import api_java_downloaded
 from server.routes import api_java_required
+from server.routes import api_modloader_versions
 from server.routes import api_server_command
 from server.routes import api_server_events
 from server.routes import api_server_logs
@@ -33,8 +35,11 @@ from server.routes import api_sessions
 from server.routes import api_start
 from server.routes import api_status
 from server.routes import api_stop
+from server.routes import api_update_world_config
+from server.routes import api_update_world_jar
 from server.routes import api_versions
 from server.routes import api_versions_map
+from server.routes import api_world_config
 from server.routes import api_worlds
 from server.routes import app_js
 from server.routes import index
@@ -107,9 +112,11 @@ app = Litestar(
         app_js,
         api_versions,
         api_versions_map,
+        api_modloader_versions,
         api_downloaded_versions,
         api_worlds,
         api_create_world,
+        api_import_world,
         api_java_downloaded,
         api_java_required,
         api_server_logs,
@@ -120,6 +127,9 @@ app = Litestar(
         api_dismiss,
         api_sessions,
         api_session_log,
+        api_world_config,
+        api_update_world_config,
+        api_update_world_jar,
         api_status,
         api_start,
         api_stop,

@@ -13,10 +13,14 @@ from server.datatypes import ServerPerfStats
 from server.datatypes import StartRequest
 from server.java import ensure_java
 from server.java import required_java_version
+from server.mod_loaders import ensure_loader
+from server.mod_loaders import get_launch_cmd
 from server.sessions import allocate_session_id
 from server.sessions import session_log_path
 from server.worlds import ensure_version
 from server.worlds import get_version
+from server.worlds import get_version_string
+from server.worlds import get_world_loader_info
 from server.worlds import get_world_port
 from server.worlds import version_jar_path
 
@@ -51,6 +55,7 @@ class MinecraftServer:
         self._session_id: int = allocate_session_id()
         self._version = get_version(start_req.world)
         self._port: int = get_world_port(start_req.world)
+        self._mod_loader, self._loader_version = get_world_loader_info(start_req.world)
         self._process: asyncio.subprocess.Process | None = None
         self._psutil_proc: psutil.Process | None = None
         self._start_time: float | None = None
@@ -64,22 +69,36 @@ class MinecraftServer:
         world_dir = (_data_dir() / "worlds" / self._world).resolve()
 
         await ensure_version(self._version)
-        jar = version_jar_path(self._version).resolve()
         java_bin = await ensure_java(required_java_version(self._version))
 
         _write_server_port(world_dir, self._port)
 
+        if self._mod_loader == "vanilla":
+            jar = version_jar_path(self._version).resolve()
+            cmd: list[str] = [
+                str(java_bin),
+                f"-Xmx{self._memory_mb}M",
+                f"-Xms{self._memory_mb}M",
+                "-jar",
+                str(jar),
+                "--nogui",
+            ]
+            proc_env = None
+        else:
+            mc_version = get_version_string(self._version)
+            await ensure_loader(world_dir, mc_version, self._mod_loader, self._loader_version, java_bin)
+            cmd, extra_env = get_launch_cmd(
+                world_dir, mc_version, self._mod_loader, self._loader_version, self._memory_mb, java_bin
+            )
+            proc_env = {**os.environ, **extra_env} if extra_env else None
+
         self._process = await asyncio.create_subprocess_exec(
-            str(java_bin),
-            f"-Xmx{self._memory_mb}M",
-            f"-Xms{self._memory_mb}M",
-            "-jar",
-            str(jar),
-            "--nogui",
+            *cmd,
             cwd=world_dir,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            env=proc_env,
         )
         self._start_time = time.monotonic()
         self._started_at = datetime.now()

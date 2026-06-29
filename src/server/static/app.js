@@ -6,6 +6,7 @@ let detailLineCount = 0;
 let versionMap = {};        // MC version string → data version int
 let reverseVersionMap = {}; // data version int → MC version string
 let lastServersJson = null;
+let sessionsLoaded = false;
 
 const MINECRAFT_PORTS = [25565, 25566, 25567, 25568, 25569];
 
@@ -56,6 +57,22 @@ function joinAddress(port) {
     return port === 25565 ? host : `${host}:${port}`;
 }
 
+// ── Tabs ───────────────────────────────────────────────────────────
+
+function switchTab(name) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    document.querySelector(`.tab[data-tab="${name}"]`).classList.add('active');
+    document.getElementById(`tab-${name}`).classList.add('active');
+    if (name === 'sessions' && !sessionsLoaded) {
+        sessionsLoaded = true;
+        loadSessions();
+    }
+    if (name === 'customize') {
+        loadCustomizeWorlds();
+    }
+}
+
 // ── Version / world loaders ────────────────────────────────────────
 
 async function loadVersionMap() {
@@ -78,6 +95,54 @@ async function loadNewWorldVersions() {
     const versions = await r.json();
     document.getElementById('new-world-version').innerHTML =
         versions.map(v => `<option value="${v}">${v}</option>`).join('');
+    if (document.getElementById('new-world-loader').value !== 'vanilla') {
+        await loadLoaderVersions();
+    }
+}
+
+function onMcVersionChange() {
+    if (document.getElementById('new-world-loader').value !== 'vanilla') {
+        loadLoaderVersions();
+    }
+}
+
+async function onLoaderChange() {
+    const loader = document.getElementById('new-world-loader').value;
+    const versionRow = document.getElementById('loader-version-row');
+    if (loader === 'vanilla') {
+        versionRow.style.display = 'none';
+        updateCreateBtn();
+        return;
+    }
+    versionRow.style.display = '';
+    await loadLoaderVersions();
+}
+
+async function loadLoaderVersions() {
+    const loader = document.getElementById('new-world-loader').value;
+    if (loader === 'vanilla') return;
+    const mcVersion = document.getElementById('new-world-version').value;
+    const sel = document.getElementById('new-world-loader-version');
+    if (!mcVersion || document.getElementById('new-world-version').selectedIndex < 0) {
+        sel.innerHTML = '<option disabled selected>Select MC version first</option>';
+        updateCreateBtn();
+        return;
+    }
+    sel.innerHTML = '<option disabled selected>Loading…</option>';
+    updateCreateBtn();
+    const r = await fetch(`/api/modloader/versions?loader=${encodeURIComponent(loader)}&mc_version=${encodeURIComponent(mcVersion)}`);
+    if (!r.ok) {
+        sel.innerHTML = '<option disabled selected>Error loading versions</option>';
+        updateCreateBtn();
+        return;
+    }
+    const versions = await r.json();
+    if (!versions.length) {
+        sel.innerHTML = '<option disabled selected>Not available for this MC version</option>';
+    } else {
+        sel.innerHTML = versions.map(v => `<option value="${v}">${v}</option>`).join('');
+    }
+    updateCreateBtn();
 }
 
 async function loadAvailableVersions() {
@@ -122,7 +187,12 @@ async function loadWorlds() {
     const sel = document.getElementById('world');
     const startBtn = document.getElementById('start-btn');
     if (worlds.length) {
-        sel.innerHTML = worlds.map(w => `<option value="${w.name}">${w.name} (${escapeHtml(reverseVersionMap[w.version] || String(w.version))} · port ${w.port})</option>`).join('');
+        sel.innerHTML = worlds.map(w => {
+            const loaderStr = w.mod_loader && w.mod_loader !== 'vanilla'
+                ? ` · ${escapeHtml(w.mod_loader)} ${escapeHtml(w.mod_loader_version)}`
+                : '';
+            return `<option value="${w.name}">${w.name} (${escapeHtml(reverseVersionMap[w.version] || String(w.version))}${loaderStr} · port ${w.port})</option>`;
+        }).join('');
         sel.classList.remove('empty');
         startBtn.disabled = false;
     } else {
@@ -198,8 +268,12 @@ function populatePortSelect() {
 
 function updateCreateBtn() {
     const portSel = document.getElementById('new-world-port');
+    const loader = document.getElementById('new-world-loader').value;
+    const loaderVerSel = document.getElementById('new-world-loader-version');
+    const loaderVerOk = loader === 'vanilla' ||
+        (loaderVerSel.value && !loaderVerSel.options[loaderVerSel.selectedIndex]?.disabled);
     document.getElementById('create-btn').disabled =
-        !document.getElementById('eula-accept').checked || !portSel.value;
+        !document.getElementById('eula-accept').checked || !portSel.value || !loaderVerOk;
 }
 
 function toggleNewWorld() {
@@ -211,6 +285,8 @@ function toggleNewWorld() {
     } else {
         document.getElementById('new-world-name').value = '';
         document.getElementById('eula-accept').checked = false;
+        document.getElementById('new-world-loader').value = 'vanilla';
+        document.getElementById('loader-version-row').style.display = 'none';
         updateCreateBtn();
     }
 }
@@ -219,7 +295,10 @@ async function createWorld() {
     const name = document.getElementById('new-world-name').value.trim();
     const version = document.getElementById('new-world-version').value;
     const port = parseInt(document.getElementById('new-world-port').value);
+    const loader = document.getElementById('new-world-loader').value;
+    const loaderVersion = loader !== 'vanilla' ? document.getElementById('new-world-loader-version').value : '';
     if (!name || !version || !port || !document.getElementById('eula-accept').checked) return;
+    if (loader !== 'vanilla' && !loaderVersion) return;
     clearError();
 
     const versionInt = versionMap[version];
@@ -232,6 +311,10 @@ async function createWorld() {
         const j = await javaR.json();
         if (!j.downloaded) downloadParts.push(`Java ${j.java_version}`);
     }
+    if (loader !== 'vanilla') {
+        const loaderLabel = loader === 'neoforge' ? 'NeoForge' : loader.charAt(0).toUpperCase() + loader.slice(1);
+        downloadParts.push(`${loaderLabel} ${loaderVersion}`);
+    }
 
     const indicator = document.getElementById('download-indicator');
     const statusText = document.getElementById('download-status-text');
@@ -240,7 +323,7 @@ async function createWorld() {
 
     indicator.classList.add('visible');
     statusText.textContent = downloadParts.length
-        ? `Downloading ${downloadParts.join(' and ')}… (this may take a minute)`
+        ? `Downloading ${downloadParts.join(', ')}… (this may take a few minutes)`
         : 'Creating world…';
     createBtn.disabled = true;
     cancelBtn.disabled = true;
@@ -248,7 +331,7 @@ async function createWorld() {
     const r = await fetch('/api/worlds', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({name, version: versionInt, port}),
+        body: JSON.stringify({name, version: versionInt, port, mod_loader: loader, mod_loader_version: loaderVersion}),
     });
 
     indicator.classList.remove('visible');
@@ -348,6 +431,7 @@ async function startServer() {
     });
     if (!r.ok) { showError(await apiErrorDetail(r)); return; }
     await refreshServers();
+    switchTab('servers');
 }
 
 async function dismissServer(sessionId) {
@@ -424,7 +508,7 @@ function closeDetail() {
     document.getElementById('detail-view').style.display = 'none';
     document.getElementById('main-view').style.display = '';
     refreshServers();
-    if (document.getElementById('past-sessions-details').open) loadSessions();
+    if (document.getElementById('tab-sessions').classList.contains('active')) loadSessions();
 }
 
 async function pollDetailOnce() {
@@ -493,6 +577,305 @@ async function stopDetailServer() {
     const r = await fetch(`/api/server/stop?session_id=${sessionId}`, {method: 'POST'});
     // 404 means the server was already removed — treat as success.
     if (!r.ok && r.status !== 404) showError(await apiErrorDetail(r));
+}
+
+// ── Import world form ──────────────────────────────────────────────
+
+function toggleImportWorld() {
+    const form = document.getElementById('import-world-form');
+    const open = form.classList.toggle('open');
+    if (open) {
+        document.getElementById('new-world-form').classList.remove('open');
+        loadImportVersions();
+        document.getElementById('import-world-name').focus();
+    } else {
+        document.getElementById('import-world-name').value = '';
+        document.getElementById('import-world-file').value = '';
+        updateImportBtn();
+    }
+}
+
+async function loadImportVersions() {
+    const snapshots = document.getElementById('import-world-snapshots').checked;
+    const r = await fetch(`/api/versions?snapshots=${snapshots}`);
+    const sel = document.getElementById('import-world-version');
+    if (!r.ok) {
+        sel.innerHTML = '<option disabled selected>Unavailable</option>';
+        updateImportBtn();
+        return;
+    }
+    const versions = await r.json();
+    sel.innerHTML = versions.map(v => `<option value="${v}">${v}</option>`).join('');
+    updateImportBtn();
+}
+
+function updateImportBtn() {
+    const name = document.getElementById('import-world-name').value.trim();
+    const file = document.getElementById('import-world-file').files[0];
+    const versionSel = document.getElementById('import-world-version');
+    const versionOk = versionSel.value && !versionSel.options[versionSel.selectedIndex]?.disabled;
+    document.getElementById('import-btn').disabled = !name || !file || !versionOk;
+}
+
+async function importWorld() {
+    const name = document.getElementById('import-world-name').value.trim();
+    const version = document.getElementById('import-world-version').value;
+    const file = document.getElementById('import-world-file').files[0];
+    if (!name || !version || !file) return;
+    const versionInt = versionMap[version];
+    if (versionInt === undefined) { showError(`Version "${version}" is not in the supported version map.`); return; }
+    clearError();
+
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('name', name);
+    formData.append('version', String(versionInt));
+    formData.append('port', '0');
+
+    const indicator = document.getElementById('import-download-indicator');
+    const statusText = document.getElementById('import-status-text');
+    const importBtn = document.getElementById('import-btn');
+    indicator.classList.add('visible');
+    statusText.textContent = `Importing ${file.name}…`;
+    importBtn.disabled = true;
+
+    const r = await fetch('/api/worlds/import', { method: 'POST', body: formData });
+    indicator.classList.remove('visible');
+    importBtn.disabled = false;
+
+    if (!r.ok) { showError(await apiErrorDetail(r)); return; }
+    toggleImportWorld();
+    await Promise.all([loadWorlds(), loadDownloadedVersions()]);
+    document.getElementById('world').value = name;
+}
+
+// ── World Customization tab ────────────────────────────────────────
+
+let currentCustomizeWorld = null;
+
+async function loadCustomizeWorlds() {
+    const r = await fetch('/api/worlds');
+    if (!r.ok) return;
+    const worlds = await r.json();
+    const sel = document.getElementById('customize-world');
+    const prev = sel.value;
+    if (!worlds.length) {
+        sel.innerHTML = '<option disabled selected>No worlds yet</option>';
+        document.getElementById('file-browser-link').style.display = 'none';
+        document.getElementById('mods-folder-link').style.display = 'none';
+        document.getElementById('customize-body').style.display = 'none';
+        return;
+    }
+    sel.innerHTML = worlds.map(w => {
+        const v = reverseVersionMap[w.version] || String(w.version);
+        const loaderStr = w.mod_loader && w.mod_loader !== 'vanilla'
+            ? ` · ${w.mod_loader} ${w.mod_loader_version}` : '';
+        return `<option value="${escapeHtml(w.name)}">${escapeHtml(w.name)} (${escapeHtml(v + loaderStr)})</option>`;
+    }).join('');
+    if (prev && worlds.find(w => w.name === prev)) {
+        sel.value = prev;
+    } else {
+        sel.selectedIndex = 0;
+    }
+    await onCustomizeWorldChange(worlds);
+}
+
+async function onCustomizeWorldChange(cachedWorlds) {
+    const sel = document.getElementById('customize-world');
+    const name = sel.value;
+    if (!name || sel.options[sel.selectedIndex]?.disabled) {
+        document.getElementById('customize-body').style.display = 'none';
+        document.getElementById('file-browser-link').style.display = 'none';
+        document.getElementById('mods-folder-link').style.display = 'none';
+        return;
+    }
+    currentCustomizeWorld = name;
+    const parts = window.location.hostname.split('.');
+    const filestashUrl = `https://filestash.${parts.slice(1).join('.')}/files/app_data/${parts[0]}/worlds/${encodeURIComponent(name)}/`;
+    const link = document.getElementById('file-browser-link');
+    link.href = filestashUrl;
+    link.style.display = '';
+    document.getElementById('customize-body').style.display = '';
+
+    const worlds = cachedWorlds || await fetch('/api/worlds').then(r => r.json());
+    const world = worlds.find(w => w.name === name);
+    if (world) {
+        const v = reverseVersionMap[world.version] || String(world.version);
+        const loaderStr = world.mod_loader && world.mod_loader !== 'vanilla'
+            ? ` (${world.mod_loader} ${world.mod_loader_version})` : '';
+        document.getElementById('current-jar-label').textContent = `${v}${loaderStr}`;
+        const modsLink = document.getElementById('mods-folder-link');
+        if (world.mod_loader && world.mod_loader !== 'vanilla') {
+            modsLink.href = `${filestashUrl}mods/`;
+            modsLink.style.display = '';
+        } else {
+            modsLink.style.display = 'none';
+        }
+    }
+    await loadServerSettings(name);
+}
+
+
+function toggleJarForm() {
+    const form = document.getElementById('change-jar-form');
+    const open = form.classList.toggle('open');
+    if (open) loadJarVersions();
+}
+
+async function loadJarVersions() {
+    const snapshots = document.getElementById('jar-snapshots').checked;
+    const r = await fetch(`/api/versions?snapshots=${snapshots}`);
+    const sel = document.getElementById('jar-version');
+    if (!r.ok) {
+        sel.innerHTML = '<option disabled selected>Unavailable</option>';
+        updateJarApplyBtn();
+        return;
+    }
+    const versions = await r.json();
+    sel.innerHTML = versions.map(v => `<option value="${v}">${v}</option>`).join('');
+    updateJarApplyBtn();
+    if (document.getElementById('jar-loader').value !== 'vanilla') await loadJarLoaderVersions();
+}
+
+function onJarMcVersionChange() {
+    if (document.getElementById('jar-loader').value !== 'vanilla') loadJarLoaderVersions();
+    updateJarApplyBtn();
+}
+
+async function onJarLoaderChange() {
+    const loader = document.getElementById('jar-loader').value;
+    const row = document.getElementById('jar-loader-version-row');
+    if (loader === 'vanilla') {
+        row.style.display = 'none';
+        updateJarApplyBtn();
+        return;
+    }
+    row.style.display = '';
+    await loadJarLoaderVersions();
+}
+
+async function loadJarLoaderVersions() {
+    const loader = document.getElementById('jar-loader').value;
+    if (loader === 'vanilla') return;
+    const mcVersion = document.getElementById('jar-version').value;
+    const sel = document.getElementById('jar-loader-version');
+    if (!mcVersion || document.getElementById('jar-version').selectedIndex < 0) {
+        sel.innerHTML = '<option disabled selected>Select MC version first</option>';
+        updateJarApplyBtn();
+        return;
+    }
+    sel.innerHTML = '<option disabled selected>Loading…</option>';
+    updateJarApplyBtn();
+    const r = await fetch(`/api/modloader/versions?loader=${encodeURIComponent(loader)}&mc_version=${encodeURIComponent(mcVersion)}`);
+    if (!r.ok) {
+        sel.innerHTML = '<option disabled selected>Error loading versions</option>';
+        updateJarApplyBtn();
+        return;
+    }
+    const versions = await r.json();
+    if (!versions.length) {
+        sel.innerHTML = '<option disabled selected>Not available for this MC version</option>';
+    } else {
+        sel.innerHTML = versions.map(v => `<option value="${v}">${v}</option>`).join('');
+    }
+    updateJarApplyBtn();
+}
+
+function updateJarApplyBtn() {
+    const versionSel = document.getElementById('jar-version');
+    const loader = document.getElementById('jar-loader').value;
+    const loaderVerSel = document.getElementById('jar-loader-version');
+    const loaderOk = loader === 'vanilla' ||
+        (loaderVerSel.value && !loaderVerSel.options[loaderVerSel.selectedIndex]?.disabled);
+    document.getElementById('jar-apply-btn').disabled = !versionSel.value || !loaderOk;
+}
+
+async function applyJarChange() {
+    if (!currentCustomizeWorld) return;
+    const mcVersion = document.getElementById('jar-version').value;
+    const loader = document.getElementById('jar-loader').value;
+    const loaderVersion = loader !== 'vanilla' ? document.getElementById('jar-loader-version').value : '';
+    if (!mcVersion || (loader !== 'vanilla' && !loaderVersion)) return;
+    const versionInt = versionMap[mcVersion];
+    if (versionInt === undefined) { showError(`Version "${mcVersion}" not in version map.`); return; }
+
+    const indicator = document.getElementById('jar-download-indicator');
+    const statusText = document.getElementById('jar-download-status-text');
+    const applyBtn = document.getElementById('jar-apply-btn');
+    const loaderLabel = loader === 'vanilla' ? '' :
+        ` + ${loader === 'neoforge' ? 'NeoForge' : loader.charAt(0).toUpperCase() + loader.slice(1)} ${loaderVersion}`;
+    indicator.classList.add('visible');
+    statusText.textContent = `Updating to ${mcVersion}${loaderLabel}… (this may take a few minutes)`;
+    applyBtn.disabled = true;
+    clearError();
+
+    const r = await fetch(`/api/worlds/${encodeURIComponent(currentCustomizeWorld)}/jar`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({version: versionInt, mod_loader: loader, mod_loader_version: loaderVersion}),
+    });
+    indicator.classList.remove('visible');
+    applyBtn.disabled = false;
+    if (!r.ok) { showError(await apiErrorDetail(r)); return; }
+
+    const modsLink = document.getElementById('mods-folder-link');
+    if (loader !== 'vanilla') {
+        const _parts = window.location.hostname.split('.');
+        modsLink.href = `https://filestash.${_parts.slice(1).join('.')}/files/app_data/${_parts[0]}/worlds/${encodeURIComponent(currentCustomizeWorld)}/mods/`;
+        modsLink.style.display = '';
+    } else {
+        modsLink.style.display = 'none';
+    }
+
+    await Promise.all([loadWorlds(), loadDownloadedVersions()]);
+    document.getElementById('change-jar-form').classList.remove('open');
+    await loadCustomizeWorlds();
+}
+
+async function loadServerSettings(name) {
+    const r = await fetch(`/api/worlds/${encodeURIComponent(name)}/config`);
+    if (!r.ok) return;
+    const cfg = await r.json();
+    document.getElementById('cfg-motd').value = cfg['motd'] ?? '';
+    document.getElementById('cfg-max-players').value = cfg['max-players'] ?? '20';
+    document.getElementById('cfg-difficulty').value = cfg['difficulty'] ?? 'easy';
+    document.getElementById('cfg-gamemode').value = cfg['gamemode'] ?? 'survival';
+    document.getElementById('cfg-view-distance').value = cfg['view-distance'] ?? '10';
+    document.getElementById('cfg-sim-distance').value = cfg['simulation-distance'] ?? '10';
+    document.getElementById('cfg-spawn-protection').value = cfg['spawn-protection'] ?? '16';
+    document.getElementById('cfg-pvp').checked = cfg['pvp'] !== 'false';
+    document.getElementById('cfg-allow-flight').checked = cfg['allow-flight'] === 'true';
+    document.getElementById('cfg-allow-nether').checked = cfg['allow-nether'] !== 'false';
+}
+
+async function saveServerSettings() {
+    if (!currentCustomizeWorld) return;
+    clearError();
+    const cfg = {
+        'motd': document.getElementById('cfg-motd').value,
+        'max-players': document.getElementById('cfg-max-players').value,
+        'difficulty': document.getElementById('cfg-difficulty').value,
+        'gamemode': document.getElementById('cfg-gamemode').value,
+        'view-distance': document.getElementById('cfg-view-distance').value,
+        'simulation-distance': document.getElementById('cfg-sim-distance').value,
+        'spawn-protection': document.getElementById('cfg-spawn-protection').value,
+        'pvp': document.getElementById('cfg-pvp').checked ? 'true' : 'false',
+        'allow-flight': document.getElementById('cfg-allow-flight').checked ? 'true' : 'false',
+        'allow-nether': document.getElementById('cfg-allow-nether').checked ? 'true' : 'false',
+    };
+    const saveBtn = document.getElementById('cfg-save-btn');
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Saving…';
+    const r = await fetch(`/api/worlds/${encodeURIComponent(currentCustomizeWorld)}/config`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(cfg),
+    });
+    saveBtn.disabled = false;
+    saveBtn.textContent = 'Save settings';
+    if (!r.ok) { showError(await apiErrorDetail(r)); return; }
+    saveBtn.textContent = 'Saved!';
+    setTimeout(() => { saveBtn.textContent = 'Save settings'; }, 2000);
 }
 
 // ── Init ───────────────────────────────────────────────────────────
