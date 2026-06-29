@@ -12,23 +12,31 @@
             padding: 0 24px;
             color: #1a1a1a;
         }
-        h1 { font-size: 1.4rem; margin-bottom: 32px; }
-        h2 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: #888; margin-bottom: 10px; }
-        section { margin-bottom: 32px; }
-        details { margin-bottom: 32px; }
-        details summary {
-            font-size: 0.8rem;
-            text-transform: uppercase;
-            letter-spacing: 0.06em;
-            color: #888;
-            margin-bottom: 10px;
-            cursor: pointer;
-            list-style: none;
-            user-select: none;
+        h1 { font-size: 1.4rem; margin-bottom: 20px; }
+
+        /* Tabs */
+        .tabs {
+            display: flex;
+            border-bottom: 2px solid #e8e8e8;
+            margin-bottom: 24px;
         }
-        details summary::after { content: " ›"; }
-        details[open] summary::after { content: " ›"; transform: rotate(90deg); display: inline-block; }
-        details summary::-webkit-details-marker { display: none; }
+        .tab {
+            padding: 9px 16px;
+            border: none;
+            border-bottom: 3px solid transparent;
+            background: none;
+            cursor: pointer;
+            font-size: 0.9rem;
+            color: #777;
+            margin-bottom: -2px;
+            border-radius: 0;
+            font-weight: 400;
+        }
+        .tab:hover { background: none; color: #333; }
+        .tab:disabled:hover { background: none; }
+        .tab.active { color: #2d7d3a; border-bottom-color: #2d7d3a; font-weight: 500; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
 
         /* Server list */
         .server-list { display: flex; flex-direction: column; gap: 8px; }
@@ -102,7 +110,13 @@
         .row { display: flex; gap: 8px; }
         .row select { flex: 1; }
         .new-world { display: none; margin-top: 8px; flex-direction: column; gap: 6px; }
-        .new-world.open { display: flex; }
+        .new-world.open {
+            display: flex;
+            background: #f5f5f5;
+            border-radius: 7px;
+            padding: 14px;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.15);
+        }
         .new-world-row { display: flex; gap: 8px; }
         .new-world-row select { flex: 1; }
 
@@ -123,6 +137,19 @@
         .btn-primary:disabled:hover { background: #2d7d3a; }
         .btn-stop { background: #c0392b; color: #fff; border-color: #c0392b; }
         .btn-stop:hover { background: #a93226; }
+        a.btn-link {
+            display: inline-block;
+            padding: 7px 14px;
+            border-radius: 5px;
+            border: 1px solid #d4d4d4;
+            background: #fff;
+            font-size: 0.9rem;
+            white-space: nowrap;
+            text-decoration: none;
+            color: inherit;
+        }
+        a.btn-link:hover { background: #f0f0f0; }
+        input[type=file] { font-size: 0.9rem; cursor: pointer; }
 
         /* Checkbox */
         .checkbox-label {
@@ -244,26 +271,50 @@
     <div id="main-view">
         <h1>OpenHost Minecraft Servers</h1>
 
-        <section>
-            <h2>Servers</h2>
+        <div class="tabs">
+            <button class="tab active" data-tab="servers" onclick="switchTab('servers')">Servers</button>
+            <button class="tab" data-tab="start" onclick="switchTab('start')">Start Server</button>
+            <button class="tab" data-tab="sessions" onclick="switchTab('sessions')">Past Sessions</button>
+            <button class="tab" data-tab="versions" onclick="switchTab('versions')">Versions</button>
+            <button class="tab" data-tab="customize" onclick="switchTab('customize')">World Customization</button>
+        </div>
+
+        <div id="tab-servers" class="tab-content active">
             <div id="server-list" class="server-list">
                 <div class="empty">Loading...</div>
             </div>
-        </section>
+        </div>
 
-        <section>
-            <h2>Start Server</h2>
-
+        <div id="tab-start" class="tab-content">
             <div class="field">
                 <label>World</label>
                 <div class="row">
                     <select id="world"><option disabled selected>Loading...</option></select>
                     <button onclick="toggleNewWorld()">+ New</button>
+                    <button onclick="toggleImportWorld()">Import</button>
+                </div>
+                <div class="new-world" id="import-world-form">
+                    <input type="text" id="import-world-name" placeholder="world-name" oninput="updateImportBtn()">
+                    <label>Zip file</label>
+                    <input type="file" id="import-world-file" accept=".zip" onchange="updateImportBtn()">
+                    <div class="new-world-row">
+                        <select id="import-world-version" onchange="updateImportBtn()"><option disabled selected>Loading…</option></select>
+                        <button id="import-btn" onclick="importWorld()" disabled>Import</button>
+                        <button onclick="toggleImportWorld()">Cancel</button>
+                    </div>
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="import-world-snapshots" onchange="loadImportVersions()">
+                        Include snapshots
+                    </label>
+                    <div id="import-download-indicator" class="download-indicator">
+                        <span class="spinner"></span>
+                        <span id="import-status-text"></span>
+                    </div>
                 </div>
                 <div class="new-world" id="new-world-form">
                     <input type="text" id="new-world-name" placeholder="world-name">
                     <div class="new-world-row">
-                        <select id="new-world-version"><option disabled selected>Loading...</option></select>
+                        <select id="new-world-version" onchange="onMcVersionChange()"><option disabled selected>Loading...</option></select>
                         <button id="create-btn" onclick="createWorld()" disabled>Create</button>
                         <button id="cancel-btn" onclick="toggleNewWorld()">Cancel</button>
                     </div>
@@ -271,6 +322,18 @@
                         <input type="checkbox" id="new-world-snapshots" onchange="loadNewWorldVersions()">
                         Include snapshots
                     </label>
+                    <label>Mod loader</label>
+                    <div class="new-world-row">
+                        <select id="new-world-loader" onchange="onLoaderChange()">
+                            <option value="vanilla">Vanilla</option>
+                            <option value="forge">Forge</option>
+                            <option value="neoforge">NeoForge</option>
+                            <option value="fabric">Fabric</option>
+                        </select>
+                    </div>
+                    <div id="loader-version-row" class="new-world-row" style="display:none">
+                        <select id="new-world-loader-version"><option disabled selected>Select MC version first</option></select>
+                    </div>
                     <div class="new-world-row" style="align-items:center">
                         <span style="font-size:0.85rem;color:#555;white-space:nowrap;flex-shrink:0">
                             Port <span class="help" title="The TCP port players connect to (e.g. :25565). Each world keeps the same port so friends can always reconnect at the same address.">?</span>
@@ -294,15 +357,122 @@
             </div>
 
             <button id="start-btn" class="btn-primary" onclick="startServer()">Start</button>
-        </section>
+        </div>
 
-        <details id="past-sessions-details" ontoggle="if(this.open) loadSessions()">
-            <summary>Past Sessions</summary>
+        <div id="tab-sessions" class="tab-content">
             <div id="sessions-list"><div class="empty">Loading…</div></div>
-        </details>
+        </div>
 
-        <details>
-            <summary>Versions</summary>
+        <div id="tab-customize" class="tab-content">
+            <div class="field">
+                <label>World</label>
+                <div class="row">
+                    <select id="customize-world" onchange="onCustomizeWorldChange()">
+                        <option disabled selected>Loading…</option>
+                    </select>
+                    <a id="file-browser-link" class="btn-link" target="_blank" rel="noopener noreferrer" style="display:none">Open in File Browser</a>
+                </div>
+            </div>
+
+            <div id="customize-body" style="display:none">
+                <!-- Change server jar -->
+                <div class="field">
+                    <label>Server jar</label>
+                    <div class="row">
+                        <span id="current-jar-label" style="flex:1;padding:7px 10px;border:1px solid #d4d4d4;border-radius:5px;font-size:0.95rem;color:#444;background:#fff"></span>
+                        <button onclick="toggleJarForm()">Change</button>
+                    </div>
+                    <div id="change-jar-form" class="new-world">
+                        <div class="new-world-row">
+                            <select id="jar-version" onchange="onJarMcVersionChange()"><option disabled selected>Loading…</option></select>
+                        </div>
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="jar-snapshots" onchange="loadJarVersions()">
+                            Include snapshots
+                        </label>
+                        <label>Mod loader</label>
+                        <div class="new-world-row">
+                            <select id="jar-loader" onchange="onJarLoaderChange()">
+                                <option value="vanilla">Vanilla</option>
+                                <option value="forge">Forge</option>
+                                <option value="neoforge">NeoForge</option>
+                                <option value="fabric">Fabric</option>
+                            </select>
+                        </div>
+                        <div id="jar-loader-version-row" class="new-world-row" style="display:none">
+                            <select id="jar-loader-version"><option disabled selected>Select MC version first</option></select>
+                        </div>
+                        <div id="jar-download-indicator" class="download-indicator">
+                            <span class="spinner"></span>
+                            <span id="jar-download-status-text"></span>
+                        </div>
+                        <div class="new-world-row">
+                            <button id="jar-apply-btn" class="btn-primary" onclick="applyJarChange()" disabled>Apply</button>
+                            <button onclick="toggleJarForm()">Cancel</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Server settings -->
+                <div class="field" style="margin-top:8px">
+                    <label>Server settings <span style="font-size:0.8rem;color:#999;font-weight:400">(takes effect on next start)</span></label>
+                    <div style="background:#f5f5f5;border-radius:7px;padding:14px;box-shadow:0 1px 4px rgba(0,0,0,0.08);display:flex;flex-direction:column;gap:10px">
+                        <div class="field" style="margin-bottom:0">
+                            <label>Message of the Day</label>
+                            <input type="text" id="cfg-motd" placeholder="A Minecraft Server">
+                        </div>
+                        <div style="display:flex;gap:12px">
+                            <div class="field" style="flex:1;margin-bottom:0">
+                                <label>Max players</label>
+                                <input type="number" id="cfg-max-players" min="1" max="1000">
+                            </div>
+                            <div class="field" style="flex:1;margin-bottom:0">
+                                <label>Difficulty</label>
+                                <select id="cfg-difficulty">
+                                    <option value="peaceful">Peaceful</option>
+                                    <option value="easy">Easy</option>
+                                    <option value="normal">Normal</option>
+                                    <option value="hard">Hard</option>
+                                </select>
+                            </div>
+                            <div class="field" style="flex:1;margin-bottom:0">
+                                <label>Game mode</label>
+                                <select id="cfg-gamemode">
+                                    <option value="survival">Survival</option>
+                                    <option value="creative">Creative</option>
+                                    <option value="adventure">Adventure</option>
+                                    <option value="spectator">Spectator</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div style="display:flex;gap:12px">
+                            <div class="field" style="flex:1;margin-bottom:0">
+                                <label>View distance</label>
+                                <input type="number" id="cfg-view-distance" min="2" max="32">
+                            </div>
+                            <div class="field" style="flex:1;margin-bottom:0">
+                                <label>Simulation distance</label>
+                                <input type="number" id="cfg-sim-distance" min="2" max="32">
+                            </div>
+                            <div class="field" style="flex:1;margin-bottom:0">
+                                <label>Spawn protection</label>
+                                <input type="number" id="cfg-spawn-protection" min="0" max="255">
+                            </div>
+                        </div>
+                        <div style="display:flex;gap:16px">
+                            <label class="checkbox-label"><input type="checkbox" id="cfg-pvp"> PvP</label>
+                            <label class="checkbox-label"><input type="checkbox" id="cfg-allow-flight"> Allow flight</label>
+                            <label class="checkbox-label"><input type="checkbox" id="cfg-allow-nether"> Allow nether</label>
+                        </div>
+                        <div>
+                            <button id="cfg-save-btn" class="btn-primary" onclick="saveServerSettings()">Save settings</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="tab-versions" class="tab-content">
             <div class="field">
                 <label>Available</label>
                 <label class="checkbox-label" style="margin-bottom:6px">
@@ -315,11 +485,11 @@
                 <label>Downloaded server JARs <span class="help" title="The first time a version is used, the JAR is downloaded and cached (~50 MB each). Each world then copies in the corresponding version.">?</span></label>
                 <div id="downloaded-tags" class="tag-list"><span class="tag-empty">Loading…</span></div>
             </div>
-            <div class="field" style="margin-bottom:0">
+            <div class="field">
                 <label>Downloaded Java runtimes <span class="help" title="Different versions require different versions of Java, which are downloaded as needed (~90 MB each).">?</span></label>
                 <div id="downloaded-java-tags" class="tag-list"><span class="tag-empty">Loading…</span></div>
             </div>
-        </details>
+        </div>
     </div>
 
     <!-- ── Live server detail view ───────────────────────────────────────── -->

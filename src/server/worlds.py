@@ -2,6 +2,7 @@ import contextlib
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import zipfile
 from collections.abc import Iterator
@@ -37,6 +38,13 @@ def _db() -> Iterator[sqlite3.Connection]:
             version INTEGER NOT NULL DEFAULT 0
         )
     """)
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(worlds)")}
+    for col, defn in [
+        ("mod_loader", "TEXT NOT NULL DEFAULT 'vanilla'"),
+        ("mod_loader_version", "TEXT NOT NULL DEFAULT ''"),
+    ]:
+        if col not in existing_cols:
+            conn.execute(f"ALTER TABLE worlds ADD COLUMN {col} {defn}")
     conn.commit()
     try:
         yield conn
@@ -66,12 +74,15 @@ def save_world_port(name: str, port: int) -> None:
         )
 
 
-def save_world_info(name: str, port: int, version: int) -> None:
+def save_world_info(
+    name: str, port: int, version: int, mod_loader: str = "vanilla", mod_loader_version: str = ""
+) -> None:
     with _db() as conn:
         conn.execute(
-            "INSERT INTO worlds (name, port, version) VALUES (?, ?, ?) "
-            "ON CONFLICT(name) DO UPDATE SET port = excluded.port, version = excluded.version",
-            (name, port, version),
+            "INSERT INTO worlds (name, port, version, mod_loader, mod_loader_version) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(name) DO UPDATE SET port=excluded.port, version=excluded.version, "
+            "mod_loader=excluded.mod_loader, mod_loader_version=excluded.mod_loader_version",
+            (name, port, version, mod_loader, mod_loader_version),
         )
 
 
@@ -120,16 +131,36 @@ def get_world(name: str) -> WorldInfo | None:
     if not (_data_dir() / "worlds" / name).is_dir():
         return None
     with _db() as conn:
-        row = conn.execute("SELECT port, version FROM worlds WHERE name = ?", (name,)).fetchone()
+        row = conn.execute(
+            "SELECT port, version, mod_loader, mod_loader_version FROM worlds WHERE name = ?", (name,)
+        ).fetchone()
     if row is None:
         return None
-    port, version = int(row[0]), int(row[1])
+    port, version, mod_loader, mod_loader_version = int(row[0]), int(row[1]), row[2], row[3]
     if version == 0:
         try:
             version = get_version(name)
         except LookupError:
             return None
-    return WorldInfo(version=version, name=name, port=port)
+    return WorldInfo(
+        version=version, name=name, port=port, mod_loader=mod_loader, mod_loader_version=mod_loader_version
+    )
+
+
+def get_world_loader_info(name: str) -> tuple[str, str]:
+    with _db() as conn:
+        row = conn.execute("SELECT mod_loader, mod_loader_version FROM worlds WHERE name = ?", (name,)).fetchone()
+    if row is None:
+        raise KeyError(f"No loader info found for world {name!r}")
+    return row[0], row[1]
+
+
+def delete_world(name: str) -> None:
+    with _db() as conn:
+        conn.execute("DELETE FROM worlds WHERE name = ?", (name,))
+    d = _data_dir() / "worlds" / name
+    if d.exists():
+        shutil.rmtree(d)
 
 
 def load_worlds() -> list[WorldInfo]:
@@ -149,7 +180,122 @@ def create_world(info: WorldInfo) -> None:
     d = _data_dir() / "worlds" / info.name
     d.mkdir(parents=True, exist_ok=True)
     (d / "eula.txt").write_text("eula=true\n")
-    save_world_info(info.name, info.port, info.version)
+    save_world_info(info.name, info.port, info.version, info.mod_loader, info.mod_loader_version)
+
+
+def world_dir(name: str) -> Path:
+    return _data_dir() / "worlds" / name
+
+
+def _extract_world_zip(zip_path: Path, dest: Path) -> None:
+    dest_str = str(dest.resolve()) + os.sep
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            members = zf.namelist()
+            roots = {m.split("/")[0] for m in members if m.strip("/")}
+            strip_prefix = (next(iter(roots)) + "/") if len(roots) == 1 else ""
+            for member in members:
+                rel = member[len(strip_prefix) :] if strip_prefix and member.startswith(strip_prefix) else member
+                if not rel or rel.endswith("/"):
+                    continue
+                target = (dest / rel).resolve()
+                if not str(target).startswith(dest_str):
+                    raise ValueError(f"Zip contains unsafe path: {member!r}")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(member) as src, target.open("wb") as f:
+                    shutil.copyfileobj(src, f)
+    except zipfile.BadZipFile as e:
+        raise ValueError(f"Invalid zip file: {e}") from e
+
+
+def import_world_from_zip(
+    zip_bytes: bytes, name: str, port: int, version: int, mod_loader: str = "vanilla", mod_loader_version: str = ""
+) -> None:
+    dest = _data_dir() / "worlds" / name
+    if dest.exists():
+        raise ValueError(f"World '{name}' already exists")
+    temp_zip = _temp_dir() / f"import_{name}.zip"
+    dest.mkdir(parents=True)
+    try:
+        temp_zip.write_bytes(zip_bytes)
+        _extract_world_zip(temp_zip, dest)
+        if not (dest / "level.dat").exists():
+            raise ValueError("Zip does not appear to contain a Minecraft world (no level.dat found)")
+        (dest / "eula.txt").write_text("eula=true\n")
+        save_world_info(name, port, version, mod_loader, mod_loader_version)
+    except Exception:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise
+    finally:
+        temp_zip.unlink(missing_ok=True)
+
+
+_CONFIG_KEYS = [
+    "motd",
+    "max-players",
+    "difficulty",
+    "gamemode",
+    "pvp",
+    "spawn-protection",
+    "view-distance",
+    "simulation-distance",
+    "allow-flight",
+    "allow-nether",
+]
+
+_CONFIG_DEFAULTS: dict[str, str] = {
+    "motd": "A Minecraft Server",
+    "max-players": "20",
+    "difficulty": "easy",
+    "gamemode": "survival",
+    "pvp": "true",
+    "spawn-protection": "16",
+    "view-distance": "10",
+    "simulation-distance": "10",
+    "allow-flight": "false",
+    "allow-nether": "true",
+}
+
+
+def read_world_config(name: str) -> dict[str, str]:
+    props = world_dir(name) / "server.properties"
+    result = dict(_CONFIG_DEFAULTS)
+    if not props.exists():
+        return result
+    for line in props.read_text().splitlines():
+        line = line.strip()
+        if line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key = key.strip()
+        if key in _CONFIG_KEYS:
+            result[key] = val.strip()
+    return result
+
+
+def write_world_config(name: str, updates: dict[str, str]) -> None:
+    props = world_dir(name) / "server.properties"
+    if props.exists():
+        lines = props.read_text().splitlines()
+    else:
+        lines = []
+    updated: set[str] = set()
+    new_lines: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("#") or "=" not in stripped:
+            new_lines.append(line)
+            continue
+        key = stripped.partition("=")[0].strip()
+        if key in updates:
+            new_lines.append(f"{key}={updates[key]}")
+            updated.add(key)
+        else:
+            new_lines.append(line)
+    for key, val in updates.items():
+        if key not in updated:
+            new_lines.append(f"{key}={val}")
+    props.write_text("\n".join(new_lines) + "\n")
 
 
 def version_jar_path(version: int) -> Path:

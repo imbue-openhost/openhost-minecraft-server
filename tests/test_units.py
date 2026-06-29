@@ -2,6 +2,8 @@ import asyncio
 import concurrent.futures
 import hashlib
 import importlib.util
+import io
+import zipfile as _zipfile
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
@@ -20,6 +22,7 @@ from server.worlds import ensure_version
 from server.worlds import fetch_available_versions
 from server.worlds import get_data_version
 from server.worlds import get_version_string
+from server.worlds import import_world_from_zip
 from server.worlds import version_jar_path
 
 # _VersionTableParser lives in the build script, not the runtime package.
@@ -90,6 +93,7 @@ class TestMinecraftServer:
     def _make(self, monkeypatch: pytest.MonkeyPatch, version: int = 4325, port: int = 25565) -> MinecraftServer:
         monkeypatch.setattr("server.server.get_version", lambda world: version)
         monkeypatch.setattr("server.server.get_world_port", lambda world: port)
+        monkeypatch.setattr("server.server.get_world_loader_info", lambda world: ("vanilla", ""))
         monkeypatch.setattr("server.server.allocate_session_id", lambda: 0)
         return MinecraftServer(StartRequest(world="test", memory_mb=2048))
 
@@ -99,6 +103,7 @@ class TestMinecraftServer:
     def test_get_session_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("server.server.get_version", lambda world: 4325)
         monkeypatch.setattr("server.server.get_world_port", lambda world: 25565)
+        monkeypatch.setattr("server.server.get_world_loader_info", lambda world: ("vanilla", ""))
         monkeypatch.setattr("server.server.allocate_session_id", lambda: 7)
         s = MinecraftServer(StartRequest(world="test", memory_mb=2048))
         assert s.get_session_id() == 7
@@ -324,6 +329,73 @@ class TestEnsureVersion:
         monkeypatch.setattr("server.worlds.download_version", _fake_download)
         _run(ensure_version(_DV_1_21_5))
         assert called == [_DV_1_21_5]
+
+
+class TestImportWorldFromZip:
+    def _setup(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.setenv("OPENHOST_APP_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("OPENHOST_APP_TEMP_DIR", str(tmp_path))
+        monkeypatch.setenv("OPENHOST_SQLITE_DEFAULT", str(tmp_path / "db.sqlite3"))
+        monkeypatch.setitem(VERSION_MAP, 4325, "1.21.5")
+
+    def _make_zip(self, files: dict[str, bytes], prefix: str = "") -> bytes:
+        buf = io.BytesIO()
+        with _zipfile.ZipFile(buf, "w") as zf:
+            for path, content in files.items():
+                zf.writestr(f"{prefix}{path}" if prefix else path, content)
+        return buf.getvalue()
+
+    def test_imports_flat_zip(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._setup(monkeypatch, tmp_path)
+        zip_bytes = self._make_zip({"level.dat": b"nbt", "eula.txt": b"eula=false"})
+        import_world_from_zip(zip_bytes, "myworld", 25565, 4325)
+        assert (tmp_path / "worlds" / "myworld" / "level.dat").read_bytes() == b"nbt"
+        # eula.txt from the zip is overwritten with the enforced value
+        assert (tmp_path / "worlds" / "myworld" / "eula.txt").read_text() == "eula=true\n"
+
+    def test_imports_zip_with_top_level_folder(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._setup(monkeypatch, tmp_path)
+        zip_bytes = self._make_zip({"level.dat": b"nbt", "region/r.0.0.mca": b"chunk"}, prefix="myworld/")
+        import_world_from_zip(zip_bytes, "imported", 25565, 4325)
+        assert (tmp_path / "worlds" / "imported" / "level.dat").exists()
+        assert (tmp_path / "worlds" / "imported" / "region" / "r.0.0.mca").read_bytes() == b"chunk"
+
+    def test_raises_if_no_level_dat(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._setup(monkeypatch, tmp_path)
+        zip_bytes = self._make_zip({"server.properties": b"online-mode=false"})
+        with pytest.raises(ValueError, match="level.dat"):
+            import_world_from_zip(zip_bytes, "myworld", 25565, 4325)
+        assert not (tmp_path / "worlds" / "myworld").exists()
+
+    def test_raises_for_bad_zip(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._setup(monkeypatch, tmp_path)
+        with pytest.raises(ValueError, match="Invalid zip"):
+            import_world_from_zip(b"not a zip", "myworld", 25565, 4325)
+        assert not (tmp_path / "worlds" / "myworld").exists()
+
+    def test_raises_if_world_already_exists(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._setup(monkeypatch, tmp_path)
+        (tmp_path / "worlds" / "myworld").mkdir(parents=True)
+        with pytest.raises(ValueError, match="already exists"):
+            import_world_from_zip(b"", "myworld", 25565, 4325)
+
+    def test_rejects_path_traversal(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._setup(monkeypatch, tmp_path)
+        buf = io.BytesIO()
+        with _zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("level.dat", b"nbt")
+            zf.writestr("../sibling.txt", b"pwned")
+        with pytest.raises(ValueError, match="unsafe path"):
+            import_world_from_zip(buf.getvalue(), "myworld", 25565, 4325)
+        assert not (tmp_path / "worlds" / "myworld").exists()
+        assert not (tmp_path / "worlds" / "sibling.txt").exists()
+
+    def test_cleans_up_dest_on_error(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._setup(monkeypatch, tmp_path)
+        zip_bytes = self._make_zip({"no_level_dat.txt": b"oops"})
+        with pytest.raises(ValueError):
+            import_world_from_zip(zip_bytes, "myworld", 25565, 4325)
+        assert not (tmp_path / "worlds" / "myworld").exists()
 
 
 class TestRequiredJavaVersion:

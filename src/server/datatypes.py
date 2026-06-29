@@ -8,6 +8,8 @@ class WorldInfo:
     version: int
     name: str
     port: int = 0
+    mod_loader: str = "vanilla"
+    mod_loader_version: str = ""
 
 
 @attr.s(auto_attribs=True, frozen=True)
@@ -37,6 +39,13 @@ class StartRequest:
 class CommandRequest:
     session_id: int
     command: str
+
+
+@attr.s(auto_attribs=True, frozen=True)
+class WorldJarUpdate:
+    version: int
+    mod_loader: str
+    mod_loader_version: str
 
 
 @attr.s(auto_attribs=True, frozen=True)

@@ -1,13 +1,19 @@
 import asyncio
 import json
+import re
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Annotated
 
 import attr
 from litestar import MediaType
 from litestar import get
 from litestar import post
+from litestar.datastructures import UploadFile
+from litestar.enums import RequestEncodingType
 from litestar.exceptions import HTTPException
+from litestar.params import Body
 from litestar.response import Response
 from litestar.response import ServerSentEvent
 from litestar.response.sse import ServerSentEventMessage
@@ -24,10 +30,14 @@ from server.datatypes import ServerPerfStats
 from server.datatypes import ServerState
 from server.datatypes import StartRequest
 from server.datatypes import WorldInfo
+from server.datatypes import WorldJarUpdate
 from server.java import ensure_java
 from server.java import is_java_downloaded
 from server.java import list_downloaded_java_versions
 from server.java import required_java_version
+from server.mod_loaders import cleanup_loader_files
+from server.mod_loaders import ensure_loader
+from server.mod_loaders import fetch_loader_versions
 from server.server import MinecraftServer
 from server.sessions import SessionEntry  # noqa: F401 — re-exported for Litestar schema
 from server.sessions import WorldSessions
@@ -38,13 +48,20 @@ from server.version_data import VERSION_MAP
 from server.worlds import MINECRAFT_PORTS
 from server.worlds import assign_world_port
 from server.worlds import create_world
+from server.worlds import delete_world
 from server.worlds import ensure_version
 from server.worlds import fetch_available_versions
 from server.worlds import get_data_version
+from server.worlds import get_version_string
 from server.worlds import get_world
+from server.worlds import import_world_from_zip
 from server.worlds import list_downloaded_versions
 from server.worlds import read_jar_data_version
+from server.worlds import read_world_config
+from server.worlds import save_world_info
 from server.worlds import version_jar_path
+from server.worlds import world_dir
+from server.worlds import write_world_config
 
 _static_index_path: Path = Path(__file__).parent / "static" / "index.html"
 _static_app_js_path: Path = Path(__file__).parent / "static" / "app.js"
@@ -94,6 +111,16 @@ def app_js() -> str:
     return _static_app_js_path.read_text()
 
 
+@get("/api/modloader/versions")
+async def api_modloader_versions(loader: str, mc_version: str) -> list[str]:
+    if loader not in ("forge", "neoforge", "fabric"):
+        raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=f"Unknown loader: {loader!r}")
+    try:
+        return await fetch_loader_versions(loader, mc_version)
+    except RuntimeError as e:
+        raise HTTPException(status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)) from e
+
+
 @get("/api/versions/map", sync_to_thread=False)
 def api_versions_map() -> dict[str, int]:
     return {v: k for k, v in VERSION_MAP.items()}
@@ -139,10 +166,15 @@ def api_java_required(mc_version: str) -> JavaRequirement:
 
 @post("/api/worlds", status_code=HTTP_201_CREATED)
 async def api_create_world(data: WorldInfo, app_state: AppState) -> None:
+    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_\- ]*$", data.name):
+        raise HTTPException(
+            status_code=HTTP_400_BAD_REQUEST,
+            detail="World name must start with a letter or digit and contain only letters, digits, spaces, hyphens, or underscores",
+        )
     try:
         await ensure_version(data.version)
         dv = read_jar_data_version(version_jar_path(data.version))
-        await ensure_java(required_java_version(dv))
+        java_bin = await ensure_java(required_java_version(dv))
     except (RuntimeError, ValueError) as e:
         raise HTTPException(status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)) from e
     used_ports = {w.port for w in app_state.worlds}
@@ -159,6 +191,13 @@ async def api_create_world(data: WorldInfo, app_state: AppState) -> None:
         except RuntimeError as e:
             raise HTTPException(status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)) from e
     create_world(attr.evolve(data, port=port))
+    if data.mod_loader != "vanilla":
+        mc_version = get_version_string(data.version)
+        try:
+            await ensure_loader(world_dir(data.name), mc_version, data.mod_loader, data.mod_loader_version, java_bin)
+        except (RuntimeError, ValueError) as e:
+            delete_world(data.name)
+            raise HTTPException(status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)) from e
     world = get_world(data.name)
     if world is not None:
         app_state.worlds.append(world)
@@ -270,6 +309,100 @@ async def api_dismiss(app_state: AppState, session_id: int) -> None:
             app_state.notify_servers_changed()
             return
     raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail=f"No server with session id {session_id}")
+
+
+@dataclass
+class _WorldImportForm:
+    file: UploadFile
+    name: str
+    version: int
+    port: int = 0
+
+
+@post("/api/worlds/import", status_code=HTTP_201_CREATED, request_max_body_size=None)
+async def api_import_world(
+    data: Annotated[_WorldImportForm, Body(media_type=RequestEncodingType.MULTI_PART)],
+    app_state: AppState,
+) -> None:
+    name = data.name.strip()
+    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_\- ]*$", name):
+        raise HTTPException(
+            status_code=HTTP_400_BAD_REQUEST,
+            detail="World name must start with a letter or digit and contain only letters, digits, spaces, hyphens, or underscores",
+        )
+    if any(w.name == name for w in app_state.worlds):
+        raise HTTPException(status_code=HTTP_409_CONFLICT, detail=f"World '{name}' already exists")
+    used_ports = {w.port for w in app_state.worlds}
+    if data.port != 0:
+        if data.port not in MINECRAFT_PORTS or data.port in used_ports:
+            raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=f"Port {data.port} is not available")
+        port = data.port
+    else:
+        try:
+            port = assign_world_port(used_ports)
+        except RuntimeError as e:
+            raise HTTPException(status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)) from e
+    try:
+        zip_bytes = await data.file.read()
+        import_world_from_zip(zip_bytes, name, port, data.version)
+    except ValueError as e:
+        raise HTTPException(status_code=HTTP_400_BAD_REQUEST, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)) from e
+    world = get_world(name)
+    if world is not None:
+        app_state.worlds.append(world)
+        app_state.worlds.sort(key=lambda w: w.name)
+
+
+@get("/api/worlds/{name:str}/config", sync_to_thread=False)
+def api_world_config(name: str) -> dict[str, str]:
+    if get_world(name) is None:
+        raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail=f"World '{name}' not found")
+    return read_world_config(name)
+
+
+@post("/api/worlds/{name:str}/config", status_code=HTTP_204_NO_CONTENT)
+async def api_update_world_config(name: str, data: dict[str, str]) -> None:
+    if get_world(name) is None:
+        raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail=f"World '{name}' not found")
+    try:
+        write_world_config(name, data)
+    except OSError as e:
+        raise HTTPException(status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)) from e
+
+
+@post("/api/worlds/{name:str}/jar", status_code=HTTP_204_NO_CONTENT)
+async def api_update_world_jar(name: str, data: WorldJarUpdate, app_state: AppState) -> None:
+    world = get_world(name)
+    if world is None:
+        raise HTTPException(status_code=HTTP_404_NOT_FOUND, detail=f"World '{name}' not found")
+    if any(s.is_running() and s.get_world() == name for s in app_state.servers):
+        raise HTTPException(status_code=HTTP_409_CONFLICT, detail=f"World '{name}' is currently running")
+    try:
+        await ensure_version(data.version)
+        dv = read_jar_data_version(version_jar_path(data.version))
+        java_bin = await ensure_java(required_java_version(dv))
+    except (RuntimeError, ValueError) as e:
+        raise HTTPException(status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)) from e
+    wdir = world_dir(name)
+    version_changed = data.version != world.version
+    loader_changed = data.mod_loader != world.mod_loader or data.mod_loader_version != world.mod_loader_version
+    if (version_changed or loader_changed) and world.mod_loader != "vanilla":
+        cleanup_loader_files(wdir, world.mod_loader)
+    if data.mod_loader != "vanilla":
+        mc_version = get_version_string(data.version)
+        try:
+            await ensure_loader(wdir, mc_version, data.mod_loader, data.mod_loader_version, java_bin)
+        except (RuntimeError, ValueError) as e:
+            raise HTTPException(status_code=HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)) from e
+    save_world_info(name, world.port, data.version, data.mod_loader, data.mod_loader_version)
+    for i, w in enumerate(app_state.worlds):
+        if w.name == name:
+            app_state.worlds[i] = attr.evolve(
+                w, version=data.version, mod_loader=data.mod_loader, mod_loader_version=data.mod_loader_version
+            )
+            break
 
 
 @get("/api/servers/events")
